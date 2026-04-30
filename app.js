@@ -1,0 +1,4524 @@
+/* ══════════════════════════════════════════════════════════════
+   FRAMESHIFT ARTIST FLOW — Step 2: Version & Task System
+   • VersionStore — single source of truth for all version data
+   • render.*     — stateless DOM updaters driven by the store
+   • TabSystem    — panel switching with history tracking
+   • UploadZone   — drag-and-drop + click-to-browse upload
+   • Player       — basic playback scrubbing on the viewer
+══════════════════════════════════════════════════════════════ */
+
+/* ─────────────────────────────────────────────────────────
+   VERSION STORE
+───────────────────────────────────────────────────────── */
+const DEFAULT_VERSIONS = [
+    { tag:'v012', num:12, time:'2h ago',      status:'working',  notes:0, by:'Maya Patel',   size:'2.4 GB',  filename:'SH_0100_comp_v012.exr', task:'SH_0100' },
+    { tag:'v011', num:11, time:'Yesterday',    status:'revise',   notes:2, by:'Maya Patel',   size:'2.1 GB',  filename:'SH_0100_comp_v011.exr', task:'SH_0100' },
+    { tag:'v010', num:10, time:'2 days ago',   status:'revise',   notes:1, by:'Maya Patel',   size:'2.3 GB',  filename:'SH_0100_comp_v010.exr', task:'SH_0100' },
+    { tag:'v009', num: 9, time:'3 days ago',   status:'approved', notes:0, by:'Maya Patel',   size:'2.0 GB',  filename:'SH_0100_comp_v009.exr', task:'SH_0100' },
+    { tag:'v008', num: 8, time:'4 days ago',   status:'approved', notes:0, by:'Maya Patel',   size:'1.9 GB',  filename:'SH_0100_comp_v008.exr', task:'SH_0100' },
+    { tag:'v007', num: 7, time:'5 days ago',   status:'revise',   notes:3, by:'Maya Patel',   size:'2.2 GB',  filename:'SH_0100_comp_v007.exr', task:'SH_0100' },
+];
+const Store = {
+  get(key, fallback) {
+    try { return JSON.parse(localStorage.getItem(key)) ?? fallback; }
+    catch { return fallback; }
+  },
+  set(key, value) {
+    try { localStorage.setItem(key, JSON.stringify(value)); }
+    catch {}
+  }
+};
+
+const User = {
+  current: Store.get('frameshift.currentUser', {
+    name: 'Maya Patel',
+    role: 'artist',
+    department: 'FX'
+  }),
+
+  setRole(role) {
+    this.current.role = role;
+    Store.set('frameshift.currentUser', this.current);
+    this.applyRole();
+    renderAppByRole();
+    initAppForRole();
+  },
+
+  applyRole() {
+    document.body.dataset.role = this.current.role;
+    const name = document.querySelector('.user-name');
+    const role = document.querySelector('.user-role');
+    const av = document.querySelector('.user-av');
+    if (name) name.textContent = this.current.name;
+    if (role) role.textContent = this.current.role === 'supervisor' ? 'FX Supervisor' : 'FX Artist';
+    if (av) av.textContent = this.current.name.split(' ').map(p => p[0]).join('').slice(0,2);
+  },
+
+  canReview() {
+    return this.current.role === 'supervisor';
+  }
+};
+window.User = User;
+
+const AssignmentBridge = {
+  _statusToArtist(status) {
+    if (status === 'sim_running') return { label: 'In Progress', progress: 60, priority: 1 };
+    if (status === 'revise') return { label: 'Needs Revision', progress: 40, priority: 2 };
+    if (status === 'needs_review' || status === 'cache_ready') return { label: 'Assigned', progress: 20, priority: 3 };
+    if (status === 'failed') return { label: 'Blocked', progress: 10, priority: 4 };
+    return { label: 'Assigned', progress: 15, priority: 5 };
+  },
+  assignmentsForArtist(artistName) {
+    if (!artistName || typeof SupervisorDashboard === 'undefined') return [];
+    return SupervisorDashboard._allShots()
+      .filter((shot) => shot.actor === artistName)
+      .slice()
+      .sort((a, b) => {
+        const rank = (s) => (s.priority === 'high' ? 0 : s.priority === 'medium' ? 1 : 2);
+        const byPriority = rank(a) - rank(b);
+        if (byPriority !== 0) return byPriority;
+        const urgency = (s) => (s.status === 'failed' ? 0 : s.status === 'revise' ? 1 : s.status === 'needs_review' ? 2 : 3);
+        return urgency(a) - urgency(b);
+      });
+  },
+  hydrateArtistTaskFlow() {
+    if (typeof TaskFlow === 'undefined') return;
+    const artistName = User.current.name;
+    const assignments = this.assignmentsForArtist(artistName).slice(0, 5);
+    if (!assignments.length) return;
+    const queue = assignments.map((shot) => shot.shot);
+    const details = {};
+    assignments.forEach((shot, index) => {
+      const mapped = this._statusToArtist(shot.status);
+      details[shot.shot] = {
+        description: `${shot.project} · ${shot.fxType}`,
+        taskType: 'FX Simulation',
+        department: User.current.department || 'FX',
+        version: shot.version || `v${String(index + 1).padStart(3, '0')}`,
+        deadline: mapped.priority <= 2 ? 'Today' : 'This Week',
+        remaining: shot.updated ? `Updated ${shot.updated}` : 'Scheduled',
+        progress: mapped.progress,
+        statusLabel: mapped.label,
+        priority: index + 1,
+        project: shot.project,
+        sourceShot: shot.shot
+      };
+    });
+    TaskFlow.queue = queue;
+    TaskFlow.dependencies = queue.reduce((acc, shot) => ({ ...acc, [shot]: [] }), {});
+    TaskFlow.details = { ...TaskFlow.details, ...details };
+    const persistedCurrent = Store.get('frameshift.currentTask', queue[0]);
+    TaskFlow.current = queue.includes(persistedCurrent) ? persistedCurrent : queue[0];
+    Store.set('frameshift.currentTask', TaskFlow.current);
+    const known = new Set(queue);
+    TaskFlow.completed = TaskFlow.completed.filter((shot) => known.has(shot));
+    Store.set('frameshift.completedTasks', TaskFlow.completed);
+    this.bindArtistTaskSlots(queue);
+  },
+  bindArtistTaskSlots(queue) {
+    const slots = [
+      document.querySelector('.current-task-card'),
+      document.querySelector('.up-next-card'),
+      ...Array.from(document.querySelectorAll('.task-row'))
+    ].filter(Boolean);
+    slots.forEach((node, idx) => {
+      const shot = queue[idx];
+      if (!shot) {
+        node.style.display = 'none';
+        return;
+      }
+      node.style.display = '';
+      node.dataset.shot = shot;
+      node.setAttribute('onclick', `openTask('${shot}')`);
+    });
+  }
+};
+window.AssignmentBridge = AssignmentBridge;
+
+function mountRoleTemplate(templateId) {
+  const root = document.getElementById('root');
+  const template = document.getElementById(templateId);
+  if (!root || !template) return;
+  root.innerHTML = '';
+  root.appendChild(template.content.cloneNode(true));
+}
+
+function renderArtistApp() {
+  mountRoleTemplate('artist-app-template');
+}
+
+function renderSupervisorApp() {
+  mountRoleTemplate('supervisor-app-template');
+}
+
+function renderProducerApp() {
+  renderArtistApp();
+}
+
+function renderAppByRole() {
+  switch (User.current.role) {
+    case 'artist':
+      renderArtistApp();
+      break;
+    case 'supervisor':
+      renderSupervisorApp();
+      break;
+    case 'producer':
+      renderProducerApp();
+      break;
+    default:
+      renderArtistApp();
+      break;
+  }
+}
+window.renderAppByRole = renderAppByRole;
+
+window.toggleRole = () => {
+  const next = User.current.role === 'artist' ? 'supervisor' : 'artist';
+  User.setRole(next);
+};
+
+const UserMenu = {
+  toggle(event) {
+    event?.stopPropagation();
+    document.getElementById('user-menu')?.classList.toggle('open');
+  },
+
+  close() {
+    document.getElementById('user-menu')?.classList.remove('open');
+  },
+
+  profile(event) {
+    event?.stopPropagation();
+    showToast('info', `${User.current.name} · ${User.current.role} · ${User.current.department}`);
+    this.close();
+  },
+
+  setRole(event, role) {
+    event?.stopPropagation();
+    User.setRole(role);
+    this.close();
+    showToast('info', `Switched to ${role} role`);
+  },
+
+  signOut(event) {
+    event?.stopPropagation();
+    showToast('info', 'Signed out of Frameshift');
+    this.close();
+  }
+};
+window.UserMenu = UserMenu;
+document.addEventListener('click', () => UserMenu.close());
+
+const SupervisorUserMenu = {
+  _avatarKey: 'frameshift.supervisorAvatar',
+
+  toggle(event) {
+    event?.stopPropagation();
+    document.getElementById('sv-user-menu')?.classList.toggle('open');
+  },
+
+  close() {
+    document.getElementById('sv-user-menu')?.classList.remove('open');
+  },
+
+  profile(event) {
+    event?.stopPropagation();
+    showToast('info', 'Supervisor profile settings');
+    this.close();
+  },
+
+  notifications(event) {
+    event?.stopPropagation();
+    showToast('info', 'Supervisor notifications');
+    this.close();
+  },
+
+  preferences(event) {
+    event?.stopPropagation();
+    showToast('info', 'Supervisor preferences');
+    this.close();
+  },
+
+  uploadAvatar(event) {
+    event?.stopPropagation();
+    document.getElementById('sv-user-avatar-upload')?.click();
+  },
+
+  onAvatarSelected(event) {
+    event?.stopPropagation();
+    const file = event?.target?.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      Store.set(this._avatarKey, String(reader.result || ''));
+      this.applyHeaderProfile();
+      showToast('success', 'Supervisor profile picture updated');
+    };
+    reader.readAsDataURL(file);
+    this.close();
+  },
+
+  applyHeaderProfile() {
+    const avatar = document.getElementById('sv-user-avatar');
+    const name = document.getElementById('sv-user-name');
+    const role = document.getElementById('sv-user-role');
+    if (name) name.textContent = User.current.name || 'Sarah Connor';
+    if (role) role.textContent = User.current.role === 'supervisor' ? 'FX Supervisor' : 'FX Artist';
+    const saved = Store.get(this._avatarKey, '');
+    const fallback = `https://api.dicebear.com/9.x/personas/svg?seed=${encodeURIComponent(User.current.name || 'Sarah Connor')}`;
+    if (avatar) avatar.src = saved || fallback;
+  },
+
+  setRole(event, role) {
+    event?.stopPropagation();
+    UserMenu.setRole(event, role);
+    this.close();
+  },
+
+  signOut(event) {
+    event?.stopPropagation();
+    showToast('info', 'Signed out of Frameshift');
+    this.close();
+  }
+};
+window.SupervisorUserMenu = SupervisorUserMenu;
+document.addEventListener('click', () => SupervisorUserMenu.close());
+
+// DATA
+const DashboardData = {
+  getInsights(ctx) {
+    const { shots, counts } = ctx;
+    const runningOrQueued = shots.filter(s => s.status === 'sim_running' || s.status === 'revise');
+    const delayRisk = runningOrQueued.filter(s => SupervisorDashboard._hoursFromUpdated(s.updated) >= 3).length;
+    const backlog = Math.max(0, counts.running - counts.cache);
+    const failureTrend = Math.min(6, counts.failed + Math.ceil(backlog / 2));
+    const queuePressure = backlog >= 3 ? 'High' : backlog > 0 ? 'Moderate' : 'Stable';
+    const atRiskCount = shots.filter(s => (s.priority === 'high' && (s.status === 'sim_running' || s.status === 'revise')) || s.overdue).length;
+    const shouldShowCritical = counts.failed > 0 || failureTrend >= 2 || atRiskCount >= 3;
+    return [
+      { level: shouldShowCritical ? 'critical' : 'high', icon: '⚠', title: `${failureTrend} simulations likely to fail in next 2 hours`, cta: 'Open Failed Queue', action: `SupervisorDashboard.applyQueueFilter('failed')` },
+      { level: backlog >= 3 ? 'high' : 'medium', icon: '📊', title: `Queue pressure ${queuePressure.toLowerCase()} (${counts.running} running / ${counts.cache} ready)`, cta: 'Review Queue', action: `SupervisorDashboard.applyQueueFilter('needs-review')` },
+      { level: delayRisk >= 3 ? 'high' : 'medium', icon: '⏱', title: `${delayRisk} simulations delayed past target cycle time`, cta: 'Check Delays', action: `SupervisorDashboard.applyQueueFilter('high-priority')` },
+      { level: atRiskCount >= 3 ? 'high' : 'medium', icon: '🕒', title: `${atRiskCount} shots at risk of missing today's review window`, cta: 'Review Risk', action: `SupervisorDashboard.applyQueueFilter('needs-review')` }
+    ];
+  },
+  getImmediateAttention(ctx) {
+    const { shots } = ctx;
+    return shots
+      .filter(s => s.status === 'failed' || s.status === 'revise' || (s.priority === 'high' && (s.needsSupervisor || s.status === 'sim_running')))
+      .sort((a, b) => SupervisorDashboard._priorityRank(a.priority) - SupervisorDashboard._priorityRank(b.priority))
+      .slice(0, 5);
+  },
+  getReviewPipeline(ctx) {
+    const { shots } = ctx;
+    return {
+      needs: shots.filter(s => s.status === 'needs_review' || s.status === 'cache_ready'),
+      inReview: shots.filter(s => s.status === 'sim_running' || s.status === 'revise'),
+      approved: shots.filter(s => s.status === 'approved')
+    };
+  }
+};
+
+// INSIGHTS
+function generateInsights(data) {
+  return DashboardData.getInsights(data);
+}
+
+// ATTENTION
+function getImmediateAttention(data) {
+  return DashboardData.getImmediateAttention(data);
+}
+
+// PIPELINE
+function getReviewPipeline(data) {
+  return DashboardData.getReviewPipeline(data);
+}
+
+const SupervisorDashboard = {
+  currentProject: Store.get('frameshift.supervisorProject', 'all'),
+  currentView: Store.get('frameshift.supervisorView', 'dashboard'),
+  currentFilter: 'needs-review',
+  activityFilter: 'errors',
+  _liveSeconds: 0,
+  reviewQueueState: Store.get('frameshift.reviewQueueState', {
+    groupBy: 'shot',
+    status: 'all',
+    department: 'all',
+    priority: 'all',
+    query: '',
+    sortBy: 'updated',
+    sortDir: 'desc',
+    page: 1,
+    pageSize: 10
+  }),
+  artistAvatarMap: Store.get('frameshift.artistAvatarMap', {}),
+  artistDirectory: [
+    { name:'Maya Patel', title:'FX Artist' },
+    { name:'Evan Brooks', title:'FX Artist' },
+    { name:'Iris Lee', title:'FX Artist' },
+    { name:'Noah Kim', title:'FX Artist' },
+    { name:'Priya Nair', title:'FX Artist' },
+    { name:'Diego Alvarez', title:'FX Artist' },
+    { name:'Lena Volkova', title:'FX Artist' },
+    { name:'Aiden Shaw', title:'FX Artist' },
+    { name:'Farah Haddad', title:'FX Artist' },
+    { name:'Tariq Rahman', title:'FX Artist' },
+    { name:'Sofia Mendes', title:'FX Artist' },
+    { name:'Jonah Price', title:'FX Artist' },
+    { name:'Keiko Tanaka', title:'FX Artist' }
+  ],
+  shots: [
+    { project:'Echo Point', shot:'SH_0102', fxType:'Debris Burst', version:'v012', status:'failed', priority:'high', issue:'CACHE FAILED — Particle overflow', needsSupervisor:true, overdue:true, updated:'2h ago', actor:'Sim Farm E2', event:'cache failed' },
+    { project:'Echo Point', shot:'SH_0104', fxType:'City Burning', version:'v004', status:'sim_running', priority:'medium', issue:'Flame sim running on final camera', needsSupervisor:false, updated:'45m ago', actor:'Echo Runner', event:'simulation started' },
+    { project:'Echo Point', shot:'SH_0105', fxType:'Smoke Plume', version:'v006', status:'revise', priority:'high', issue:'Needs density adjustment', needsSupervisor:true, updated:'5h ago', actor:'Maya Patel', event:'sent for revise' },
+    { project:'Echo Point', shot:'SH_0106', fxType:'Spark Shower', version:'v008', status:'approved', priority:'low', issue:'Sparks pass signed off', needsSupervisor:false, updated:'2d ago', actor:'Iris Lee', event:'approved' },
+    { project:'Echo Point', shot:'SH_0108', fxType:'Building Collapse', version:'v003', status:'needs_review', priority:'high', issue:'Building fracture pass ready for review', needsSupervisor:true, updated:'1h ago', actor:'Echo Artist 4', event:'submitted for review' },
+    { project:'Echo Point', shot:'SH_0110', fxType:'Fire Blast', version:'v002', status:'revise', priority:'high', issue:'Flame curl timing mismatch', needsSupervisor:true, overdue:true, updated:'1d ago', actor:'Evan Brooks', event:'sent for revise' },
+    { project:'Echo Point', shot:'SH_0111', fxType:'River Flood', version:'v005', status:'cache_ready', priority:'medium', issue:'River interaction cache ready', needsSupervisor:true, updated:'2h ago', actor:'Sim Farm E3', event:'cache completed' },
+    { project:'Echo Point', shot:'SH_0113', fxType:'Dust Impact', version:'v007', status:'sim_running', priority:'medium', issue:'Ground impact dust in progress', needsSupervisor:false, updated:'3h ago', actor:'Echo Runner', event:'simulation started' },
+    { project:'Echo Point', shot:'SH_0114', fxType:'Avalanche', version:'v003', status:'needs_review', priority:'medium', issue:'Avalanche interaction pass ready', needsSupervisor:true, updated:'4h ago', actor:'Echo Artist 6', event:'submitted for review' },
+    { project:'Echo Point', shot:'SH_0116', fxType:'Sand Sweep', version:'v002', status:'cache_ready', priority:'low', issue:'Sand sweep pass approved for lighting handoff', needsSupervisor:false, updated:'9h ago', actor:'Sim Farm E1', event:'cache completed' },
+    { project:'Echo Point', shot:'SH_0118', fxType:'Bridge Collapse', version:'v009', status:'failed', priority:'high', issue:'Substep instability on impact burst', needsSupervisor:true, overdue:true, updated:'6h ago', actor:'Sim Farm E5', event:'cache failed' },
+    { project:'Echo Point', shot:'SH_0120', fxType:'Ember Trail', version:'v004', status:'approved', priority:'low', issue:'Energy trail pass approved', needsSupervisor:false, updated:'1d ago', actor:'Echo Artist 2', event:'approved' },
+
+    { project:'Atlas', shot:'SH_0410', fxType:'Ocean Surface', version:'v012', status:'sim_running', priority:'medium', issue:'Long running ocean sim pass', needsSupervisor:false, updated:'30m ago', actor:'Atlas Runner', event:'simulation started' },
+    { project:'Atlas', shot:'SH_0411', fxType:'Whitewater', version:'v005', status:'needs_review', priority:'medium', issue:'Foam breakup pass needs supervisor eye', needsSupervisor:true, updated:'2h ago', actor:'Atlas Artist 1', event:'submitted for review' },
+    { project:'Atlas', shot:'SH_0413', fxType:'Dust Trail', version:'v006', status:'revise', priority:'medium', issue:'Holdout edges need cleanup', needsSupervisor:true, updated:'6h ago', actor:'Noah Kim', event:'sent for revise' },
+    { project:'Atlas', shot:'SH_0414', fxType:'Building Blast', version:'v003', status:'failed', priority:'high', issue:'Rigid body explode pass diverged', needsSupervisor:true, overdue:true, updated:'3h ago', actor:'Sim Farm A6', event:'cache failed' },
+    { project:'Atlas', shot:'SH_0416', fxType:'Debris Spray', version:'v004', status:'cache_ready', priority:'low', issue:'Ready for supervisor review', needsSupervisor:true, updated:'7h ago', actor:'Sim Farm A3', event:'cache completed' },
+    { project:'Atlas', shot:'SH_0418', fxType:'Industrial Smoke', version:'v008', status:'sim_running', priority:'medium', issue:'Industrial smoke plume pass running', needsSupervisor:false, updated:'1h ago', actor:'Atlas Runner', event:'simulation started' },
+    { project:'Atlas', shot:'SH_0420', fxType:'Snow Burst', version:'v010', status:'needs_review', priority:'high', issue:'Particle advect motion needs final review', needsSupervisor:true, updated:'50m ago', actor:'Atlas Artist 7', event:'submitted for review' },
+    { project:'Atlas', shot:'SH_0422', fxType:'Debris Field', version:'v002', status:'revise', priority:'high', issue:'Debris silhouette too noisy', needsSupervisor:true, updated:'8h ago', actor:'Atlas Artist 3', event:'sent for revise' },
+    { project:'Atlas', shot:'SH_0425', fxType:'Explosion Core', version:'v004', status:'cache_ready', priority:'medium', issue:'Pyro cache ready for comp checks', needsSupervisor:true, updated:'5h ago', actor:'Sim Farm A7', event:'cache completed' },
+    { project:'Atlas', shot:'SH_0427', fxType:'Sandstorm', version:'v003', status:'approved', priority:'low', issue:'Sandstorm interaction approved', needsSupervisor:false, updated:'2d ago', actor:'Atlas Artist 9', event:'approved' },
+    { project:'Atlas', shot:'SH_0429', fxType:'Bridge Collapse', version:'v001', status:'failed', priority:'high', issue:'Constraint spikes on hero frame', needsSupervisor:true, overdue:true, updated:'9h ago', actor:'Sim Farm A9', event:'cache failed' },
+    { project:'Atlas', shot:'SH_0431', fxType:'Energy Burst', version:'v006', status:'cache_ready', priority:'medium', issue:'Energy burst cache completed', needsSupervisor:true, updated:'4h ago', actor:'Sim Farm A4', event:'cache completed' },
+
+    { project:'Nova', shot:'SH_0231', fxType:'Smoke Wall', version:'v015', status:'needs_review', priority:'high', issue:'Needs supervisor eye on breakup', needsSupervisor:true, updated:'1h ago', actor:'Nova Artist', event:'submitted for review' },
+    { project:'Nova', shot:'SH_0233', fxType:'Waterfall', version:'v007', status:'sim_running', priority:'medium', issue:'Waterfall hero sim in progress', needsSupervisor:false, updated:'2h ago', actor:'Nova Runner', event:'simulation started' },
+    { project:'Nova', shot:'SH_0235', fxType:'Debris Pull', version:'v005', status:'cache_ready', priority:'medium', issue:'Cache completed, waiting review', needsSupervisor:true, updated:'3h ago', actor:'Sim Farm N1', event:'cache completed' },
+    { project:'Nova', shot:'SH_0238', fxType:'Fire', version:'v009', status:'failed', priority:'high', issue:'Solver divergence in final frames', needsSupervisor:true, overdue:true, updated:'4h ago', actor:'Sim Farm N2', event:'cache failed' },
+    { project:'Nova', shot:'SH_0240', fxType:'Street Collapse', version:'v003', status:'revise', priority:'high', issue:'Street collapse timing off by 14 frames', needsSupervisor:true, updated:'6h ago', actor:'Nova Artist 5', event:'sent for revise' },
+    { project:'Nova', shot:'SH_0242', fxType:'Ash Drift', version:'v011', status:'sim_running', priority:'medium', issue:'Particle render cache pending', needsSupervisor:false, updated:'3h ago', actor:'Nova Runner', event:'simulation started' },
+    { project:'Nova', shot:'SH_0244', fxType:'Fireball', version:'v004', status:'needs_review', priority:'high', issue:'Pyro readability check requested', needsSupervisor:true, updated:'2h ago', actor:'Nova Artist 3', event:'submitted for review' },
+    { project:'Nova', shot:'SH_0247', fxType:'Flood Surge', version:'v002', status:'cache_ready', priority:'low', issue:'Flood surge secondary cache ready', needsSupervisor:true, updated:'9h ago', actor:'Sim Farm N6', event:'cache completed' },
+    { project:'Nova', shot:'SH_0250', fxType:'Debris Trail', version:'v003', status:'approved', priority:'low', issue:'Debris pass approved for final comp', needsSupervisor:false, updated:'1d ago', actor:'Nova Artist 8', event:'approved' },
+    { project:'Nova', shot:'SH_0252', fxType:'Avalanche', version:'v001', status:'revise', priority:'medium', issue:'Avalanche edge clipping in close-up', needsSupervisor:true, updated:'7h ago', actor:'Nova Artist 11', event:'sent for revise' },
+    { project:'Nova', shot:'SH_0254', fxType:'Bridge Collapse', version:'v002', status:'failed', priority:'high', issue:'Collapse trigger missed timing window', needsSupervisor:true, overdue:true, updated:'5h ago', actor:'Sim Farm N9', event:'cache failed' },
+    { project:'Nova', shot:'SH_0256', fxType:'Impact Burst', version:'v006', status:'cache_ready', priority:'medium', issue:'Impact energy cache completed', needsSupervisor:true, updated:'4h ago', actor:'Sim Farm N4', event:'cache completed' },
+
+    { project:'Echo Point', shot:'SH_0122', fxType:'Fireline Spread', version:'v003', status:'needs_review', priority:'high', issue:'Needs timing approval for fireline spread', needsSupervisor:true, updated:'35m ago', actor:'Maya Patel', event:'submitted for review' },
+    { project:'Echo Point', shot:'SH_0124', fxType:'Debris Rain', version:'v005', status:'failed', priority:'high', issue:'Debris collision pass diverged near frame 112', needsSupervisor:true, overdue:true, updated:'1h ago', actor:'Evan Brooks', event:'cache failed' },
+    { project:'Echo Point', shot:'SH_0126', fxType:'Smoke Layer', version:'v004', status:'revise', priority:'high', issue:'Smoke layering lacks depth in hero beat', needsSupervisor:true, updated:'2h ago', actor:'Iris Lee', event:'sent for revise' },
+    { project:'Echo Point', shot:'SH_0128', fxType:'Bridge Collapse', version:'v002', status:'sim_running', priority:'high', issue:'Bridge fracture sim running on farm', needsSupervisor:true, updated:'50m ago', actor:'Maya Patel', event:'simulation started' },
+    { project:'Echo Point', shot:'SH_0130', fxType:'Ash Fallout', version:'v003', status:'needs_review', priority:'medium', issue:'Ash breakup pass queued for supervisor review', needsSupervisor:true, updated:'3h ago', actor:'Evan Brooks', event:'submitted for review' },
+    { project:'Echo Point', shot:'SH_0132', fxType:'Gas Explosion', version:'v001', status:'failed', priority:'high', issue:'Blast pressure overdrives camera framing', needsSupervisor:true, overdue:true, updated:'4h ago', actor:'Aiden Shaw', event:'cache failed' },
+
+    { project:'Atlas', shot:'SH_0433', fxType:'Tunnel Dustout', version:'v004', status:'needs_review', priority:'high', issue:'Tunnel dustout needs supervisor signoff', needsSupervisor:true, updated:'25m ago', actor:'Maya Patel', event:'submitted for review' },
+    { project:'Atlas', shot:'SH_0435', fxType:'Harbor Wave Crash', version:'v005', status:'sim_running', priority:'high', issue:'Harbor wave interaction sim still running', needsSupervisor:true, updated:'1h ago', actor:'Iris Lee', event:'simulation started' },
+    { project:'Atlas', shot:'SH_0437', fxType:'Debris Avalanche', version:'v003', status:'revise', priority:'high', issue:'Debris cadence needs retime on impact', needsSupervisor:true, updated:'2h ago', actor:'Evan Brooks', event:'sent for revise' },
+    { project:'Atlas', shot:'SH_0439', fxType:'Fuel Fire', version:'v002', status:'failed', priority:'high', issue:'Fuel fire pass flickers at cut transition', needsSupervisor:true, overdue:true, updated:'5h ago', actor:'Maya Patel', event:'cache failed' },
+    { project:'Atlas', shot:'SH_0441', fxType:'Smoke Tunnel', version:'v006', status:'needs_review', priority:'medium', issue:'Smoke tunnel pass waiting for notes', needsSupervisor:true, updated:'4h ago', actor:'Farah Haddad', event:'submitted for review' },
+    { project:'Atlas', shot:'SH_0443', fxType:'Rockfall', version:'v004', status:'cache_ready', priority:'medium', issue:'Rockfall cache staged for review', needsSupervisor:true, updated:'6h ago', actor:'Evan Brooks', event:'cache completed' },
+
+    { project:'Nova', shot:'SH_0258', fxType:'City Burning', version:'v004', status:'failed', priority:'high', issue:'City burning look breaks continuity in shot tail', needsSupervisor:true, overdue:true, updated:'40m ago', actor:'Maya Patel', event:'cache failed' },
+    { project:'Nova', shot:'SH_0260', fxType:'Train Wreck Debris', version:'v003', status:'revise', priority:'high', issue:'Debris timing needs director beat match', needsSupervisor:true, updated:'1h ago', actor:'Iris Lee', event:'sent for revise' },
+    { project:'Nova', shot:'SH_0262', fxType:'Storm Smoke', version:'v005', status:'needs_review', priority:'high', issue:'Storm smoke breakup waiting approval', needsSupervisor:true, updated:'2h ago', actor:'Evan Brooks', event:'submitted for review' },
+    { project:'Nova', shot:'SH_0264', fxType:'Dam Break', version:'v002', status:'sim_running', priority:'high', issue:'Dam break sim in final water solve', needsSupervisor:true, updated:'55m ago', actor:'Diego Alvarez', event:'simulation started' },
+    { project:'Nova', shot:'SH_0266', fxType:'Firestorm', version:'v001', status:'failed', priority:'high', issue:'Firestorm pass unstable during camera spin', needsSupervisor:true, overdue:true, updated:'3h ago', actor:'Maya Patel', event:'cache failed' },
+    { project:'Nova', shot:'SH_0268', fxType:'Bridge Collapse', version:'v004', status:'needs_review', priority:'medium', issue:'Bridge collapse secondary dust ready for review', needsSupervisor:true, updated:'7h ago', actor:'Iris Lee', event:'submitted for review' }
+  ],
+
+  _statusLabel(status) {
+    const map = {
+      needs_review: 'Needs Review',
+      sim_running: 'Sim Running',
+      cache_ready: 'Cache Ready',
+      revise: 'Revise',
+      approved: 'Approved',
+      failed: 'Failed'
+    };
+    return map[status] || status;
+  },
+
+  _statusMarkClass(status) {
+    const map = {
+      needs_review: 'purple',
+      sim_running: 'blue',
+      cache_ready: 'blue',
+      revise: 'medium',
+      approved: 'green',
+      failed: 'high'
+    };
+    return map[status] || 'purple';
+  },
+
+  _activityIconClass(shot) {
+    if (shot.status === 'failed' || /failed/i.test(shot.event)) return 'fail';
+    if (shot.status === 'revise' || /revise/i.test(shot.event)) return 'revise';
+    if (shot.status === 'approved' || /approved/i.test(shot.event)) return 'approved';
+    if (shot.status === 'sim_running' || /started/i.test(shot.event)) return 'started';
+    return 'default';
+  },
+
+  _activityIconSvg(iconClass) {
+    if (iconClass === 'fail') {
+      return `<svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 4 21 19H3L12 4z"></path>
+        <path d="M12 10v4"></path>
+        <circle cx="12" cy="16.8" r=".7"></circle>
+      </svg>`;
+    }
+    if (iconClass === 'revise') {
+      return `<svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M20 12a8 8 0 1 1-2.5-5.8"></path>
+        <path d="M20 4v5h-5"></path>
+      </svg>`;
+    }
+    if (iconClass === 'approved') {
+      return `<svg viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r="8"></circle>
+        <path d="m8.5 12 2.3 2.3L15.8 9.5"></path>
+      </svg>`;
+    }
+    if (iconClass === 'started') {
+      return `<svg viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r="8"></circle>
+        <path d="M12 8v4l2.8 1.6"></path>
+      </svg>`;
+    }
+    return `<svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M3 8.5 7.5 4h9L21 8.5v8.8a1.7 1.7 0 0 1-1.7 1.7H4.7A1.7 1.7 0 0 1 3 17.3z"></path>
+      <path d="M7 12h10"></path>
+    </svg>`;
+  },
+
+  _priorityRank(priority) {
+    return priority === 'high' ? 0 : priority === 'medium' ? 1 : 2;
+  },
+
+  _projectPrefix(shot) {
+    return this.currentProject === 'all' ? `[${shot.project}] ` : '';
+  },
+
+  _companyArtists() {
+    return this.artistDirectory.map(a => a.name);
+  },
+
+  _normalizeShotActors() {
+    const company = this._companyArtists();
+    if (!company.length) return;
+    this.shots = this.shots.map((shot, idx) => {
+      if (company.includes(shot.actor)) return shot;
+      return { ...shot, actor: company[idx % company.length] };
+    });
+  },
+
+  _projectShots() {
+    return this.shots.filter(shot => shot.project === this.currentProject);
+  },
+
+  _allShots() {
+    return this.shots.slice();
+  },
+
+  _filterForQueue(shots, filter) {
+    if (filter === 'immediate') return shots.filter(s => s.status === 'failed' || (s.priority === 'high' && s.needsSupervisor));
+    if (filter === 'failed') return shots.filter(s => s.status === 'failed');
+    if (filter === 'high-priority') return shots.filter(s => s.priority === 'high');
+    if (filter === 'cache-ready') return shots.filter(s => s.status === 'cache_ready');
+    if (filter === 'blocked') return shots.filter(s => s.status === 'failed' || s.status === 'revise');
+    if (filter === 'needs-review') return shots.filter(s => s.status === 'needs_review' || s.status === 'cache_ready');
+    if (filter === 'approved') return shots.filter(s => s.status === 'approved');
+    return shots;
+  },
+
+  _counts(shots) {
+    return {
+      needs: shots.filter(s => s.status === 'needs_review').length,
+      running: shots.filter(s => s.status === 'sim_running').length,
+      cache: shots.filter(s => s.status === 'cache_ready').length,
+      revise: shots.filter(s => s.status === 'revise').length,
+      approved: shots.filter(s => s.status === 'approved').length,
+      failed: shots.filter(s => s.status === 'failed').length,
+      overdue: shots.filter(s => s.overdue).length
+    };
+  },
+
+  _hoursFromUpdated(updated) {
+    if (!updated) return 0;
+    const m = String(updated).match(/(\d+)\s*([mhd])/i);
+    if (!m) return 0;
+    const n = Number(m[1]);
+    const unit = m[2].toLowerCase();
+    if (unit === 'm') return Math.max(1, Math.round(n / 60));
+    if (unit === 'h') return n;
+    return n * 24;
+  },
+
+  _timeWaiting(updated) {
+    const h = this._hoursFromUpdated(updated);
+    return h >= 24 ? `Waiting ${Math.round(h / 24)}d` : `Waiting ${h}h`;
+  },
+
+  _riskLabel(shot) {
+    if (shot.status === 'failed') return { label: 'Blocked', cls: 'high' };
+    if (shot.priority === 'high' || shot.overdue) return { label: 'At Risk', cls: 'medium' };
+    return { label: 'On Track', cls: 'green' };
+  },
+
+  _simTrend(counts) {
+    if (counts.failed >= 2) return 'Delays increasing';
+    if (counts.running > counts.cache) return 'Queue pressure rising';
+    return 'Stable';
+  },
+
+  _dependencyTag(shot) {
+    if (shot.status === 'failed') return { cls: 'blocked', label: 'Blocked by simulation' };
+    if (shot.status === 'sim_running') return { cls: 'waiting', label: 'Waiting on cache' };
+    if (shot.needsSupervisor) return { cls: 'dependent', label: 'Downstream impact: 2 shots' };
+    return null;
+  },
+
+  _renderLiveUpdated() {
+    if (this.currentProject === 'all') return;
+    const el = document.querySelector('#sv-project-dashboard .sv-updated');
+    if (!el) return;
+    el.innerHTML = `<span class="sv-live-dot"></span>Updated ${this._liveSeconds}s ago`;
+  },
+
+  _animateValueTick(el) {
+    if (!el) return;
+    el.classList.remove('sv-value-tick');
+    void el.offsetWidth;
+    el.classList.add('sv-value-tick');
+  },
+
+  _animatePanel(ids) {
+    ids.forEach((id) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.classList.remove('sv-panel-refresh');
+      void el.offsetWidth;
+      el.classList.add('sv-panel-refresh');
+    });
+  },
+
+  _bindDependencyHover() {
+    if (this._depsBound) return;
+    const root = document.getElementById('sv-project-dashboard');
+    if (!root) return;
+    const toggle = (shot, on) => {
+      if (!shot) return;
+      root.querySelectorAll('.list-item').forEach((item) => {
+        const firstStrong = item.querySelector('strong');
+        if (!firstStrong) return;
+        const matches = firstStrong.textContent.includes(shot);
+        if (matches) item.classList.toggle('sv-linked-highlight', on);
+      });
+    };
+    root.addEventListener('mouseover', (event) => {
+      const tag = event.target.closest('.sv-tag[data-blocked-shot]');
+      toggle(tag?.dataset.blockedShot, true);
+    });
+    root.addEventListener('mouseout', (event) => {
+      const tag = event.target.closest('.sv-tag[data-blocked-shot]');
+      toggle(tag?.dataset.blockedShot, false);
+    });
+    this._depsBound = true;
+  },
+
+  setProject(project) {
+    this.currentProject = project;
+    Store.set('frameshift.supervisorProject', project);
+    this.render();
+  },
+
+  setView(view) {
+    this.currentView = view === 'review-queue' ? 'review-queue' : 'dashboard';
+    Store.set('frameshift.supervisorView', this.currentView);
+    const app = document.getElementById('supervisor-app');
+    if (app) app.classList.toggle('sv-review-queue-mode', this.currentView === 'review-queue');
+    this.render();
+  },
+
+  updateReviewQueueFilter(key, value) {
+    this.reviewQueueState[key] = value;
+    if (key !== 'page') this.reviewQueueState.page = 1;
+    Store.set('frameshift.reviewQueueState', this.reviewQueueState);
+    this.renderReviewQueue();
+  },
+
+  setReviewQueueSort(column) {
+    if (this.reviewQueueState.sortBy === column) {
+      this.reviewQueueState.sortDir = this.reviewQueueState.sortDir === 'asc' ? 'desc' : 'asc';
+    } else {
+      this.reviewQueueState.sortBy = column;
+      this.reviewQueueState.sortDir = column === 'updated' ? 'desc' : 'asc';
+    }
+    this.reviewQueueState.page = 1;
+    Store.set('frameshift.reviewQueueState', this.reviewQueueState);
+    this.renderReviewQueue();
+  },
+
+  setReviewQueuePage(page) {
+    this.reviewQueueState.page = Math.max(1, page);
+    Store.set('frameshift.reviewQueueState', this.reviewQueueState);
+    this.renderReviewQueue();
+  },
+
+  toggleReviewQueueMenu(event, shot) {
+    event?.stopPropagation();
+    const trigger = event?.currentTarget;
+    if (!trigger) return;
+    const row = trigger.closest('tr');
+    if (!row) return;
+    const menu = row.querySelector('.sv-rq-actions-menu');
+    if (!menu) return;
+    document.querySelectorAll('.sv-rq-actions-menu.open').forEach((el) => {
+      if (el !== menu) el.classList.remove('open');
+    });
+    menu.classList.toggle('open');
+    menu.dataset.shot = shot;
+  },
+
+  closeReviewQueueMenus() {
+    document.querySelectorAll('.sv-rq-actions-menu.open').forEach((el) => el.classList.remove('open'));
+  },
+
+  reviewQueueAction(event, action, shot) {
+    event?.stopPropagation();
+    this.closeReviewQueueMenus();
+    if (action === 'open-shot') return this.openShot(shot);
+    if (action === 'open-review') {
+      this.currentFilter = 'needs-review';
+      return this.goToReviewQueue();
+    }
+    if (action === 'assign') return showToast('info', `Assign/Reassign artist for ${shot}`);
+    if (action === 'status') return showToast('info', `Change status for ${shot}`);
+    if (action === 'priority') return showToast('info', `Set priority for ${shot}`);
+    if (action === 'versions') return showToast('info', `Viewing versions for ${shot}`);
+    if (action === 'notes') return showToast('info', `Open notes for ${shot}`);
+    if (action === 'activity') return showToast('info', `Viewing activity log for ${shot}`);
+  },
+
+  _queueContext() {
+    return this.currentProject === 'all' ? 'all-projects' : 'project';
+  },
+
+  getReviewQueueData(context, projectId) {
+    const shots = context === 'all-projects'
+      ? this._allShots()
+      : this._allShots().filter((s) => s.project === projectId);
+    return shots.map((shot, idx) => ({
+      ...shot,
+      task: `${shot.fxType} Simulation`,
+      department: 'FX',
+      thumbClass: idx % 4
+    }));
+  },
+
+  _syncNavState() {
+    const dash = document.getElementById('sv-nav-dashboard');
+    const queue = document.getElementById('sv-nav-review-queue');
+    if (dash) dash.classList.toggle('active', this.currentView !== 'review-queue');
+    if (queue) queue.classList.toggle('active', this.currentView === 'review-queue');
+    const pill = queue?.querySelector('.sv-pill');
+    if (pill) {
+      const context = this._queueContext();
+      const data = this.getReviewQueueData(context, this.currentProject);
+      pill.textContent = String(data.length);
+    }
+  },
+
+  _bindTopSearch() {
+    const topSearch = document.querySelector('.sv-search');
+    if (!topSearch) return;
+    topSearch.oninput = (event) => {
+      const query = String(event?.target?.value || '');
+      const commandInput = document.getElementById('sv-command-input');
+      if (commandInput) commandInput.value = query;
+      if (!query.trim()) {
+        SupervisorDashboardPalette.close();
+        return;
+      }
+      SupervisorDashboardPalette.open({ keep_focus: true });
+      SupervisorDashboardPalette.search(query);
+    };
+    topSearch.onkeydown = (event) => {
+      const query = String(topSearch.value || '').trim();
+      if (!query) return;
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp' || event.key === 'Enter') {
+        SupervisorDashboardPalette.open({ keep_focus: true });
+        SupervisorDashboardPalette.keynav(event);
+      }
+      if (event.key === 'Escape') {
+        SupervisorDashboardPalette.close();
+        topSearch.blur();
+      }
+    };
+  },
+
+  render() {
+    const isGlobal = this.currentProject === 'all';
+    const projectView = document.getElementById('sv-project-dashboard');
+    const globalView = document.getElementById('sv-global-dashboard');
+    const queueView = document.getElementById('sv-review-queue-view');
+    const supervisorApp = document.getElementById('supervisor-app');
+    if (supervisorApp) supervisorApp.classList.toggle('sv-global-mode', isGlobal);
+    if (supervisorApp) supervisorApp.classList.toggle('sv-review-queue-mode', this.currentView === 'review-queue');
+    const showQueue = this.currentView === 'review-queue';
+    if (projectView) {
+      const hidden = showQueue || isGlobal;
+      projectView.classList.toggle('is-hidden', hidden);
+      projectView.style.display = hidden ? 'none' : '';
+    }
+    if (globalView) {
+      const hidden = showQueue || !isGlobal;
+      globalView.classList.toggle('is-hidden', hidden);
+      globalView.style.display = hidden ? 'none' : '';
+    }
+    if (queueView) {
+      queueView.classList.toggle('is-hidden', !showQueue);
+      queueView.style.display = showQueue ? '' : 'none';
+    }
+    this._syncNavState();
+    if (showQueue) {
+      this.renderReviewQueue();
+      this._bindTopSearch();
+      return;
+    }
+    if (isGlobal) {
+      this.renderGlobal();
+      this._bindTopSearch();
+      return;
+    }
+    this.renderProject();
+    this._bindTopSearch();
+  },
+
+  renderProject() {
+    const root = document.getElementById('sv-project-dashboard');
+    if (root) {
+      root.innerHTML = `
+        <div class="main-container">
+          <div class="sv-project-layout dashboard-grid">
+          <div class="dashboard-header page-header">
+            <div class="sv-heading-row">
+              <div>
+                <h1 id="sv-project-heading">Project Supervisor Overview</h1>
+                <p id="sv-project-subheading">Pipeline health and critical triage.</p>
+              </div>
+              <div class="sv-updated">Last updated: 2m ago</div>
+            </div>
+          </div>
+          <div class="sv-decision-bar section">
+            <div class="sv-kpi-row" id="sv-kpi-row">
+              <article class="sv-kpi-compact is-critical" id="sv-kpi-card-failed">
+                <h3>FAILED SIMS</h3>
+                <strong id="sv-kpi-failed">0</strong>
+                <em>requires action</em>
+              </article>
+              <article class="sv-kpi-compact" id="sv-kpi-card-needs">
+                <h3>NEEDS REVIEW</h3>
+                <strong id="sv-kpi-needs">0</strong>
+                <em>ready now</em>
+              </article>
+              <article class="sv-kpi-compact" id="sv-kpi-card-running">
+                <h3>SIM RUNNING</h3>
+                <strong id="sv-kpi-running">0</strong>
+                <em>active sims</em>
+              </article>
+              <article class="sv-kpi-compact" id="sv-kpi-card-cache">
+                <h3>CACHE READY</h3>
+                <strong id="sv-kpi-cache">0</strong>
+                <em>awaiting review</em>
+              </article>
+              <article class="sv-kpi-compact is-high" id="sv-kpi-card-revise">
+                <h3>REVISE</h3>
+                <strong id="sv-kpi-revise">0</strong>
+                <em>pending fixes</em>
+              </article>
+              <article class="sv-kpi-compact is-muted" id="sv-kpi-card-approved">
+                <h3>APPROVED</h3>
+                <strong id="sv-kpi-approved">0</strong>
+                <em>today</em>
+              </article>
+            </div>
+          </div>
+
+          <div class="sv-insights-strip section">
+            <div class="sv-insights-head">
+              <div class="sv-insights-title section-title">SUPERVISOR INSIGHTS</div>
+              <button class="sv-link sv-card-link" id="sv-insights-viewall">View all insights (4)</button>
+            </div>
+            <div class="sv-insights-row" id="sv-insight-list"></div>
+          </div>
+
+          <section class="sv-card card sv-decision-card sv-immediate-full full-width section">
+            <div class="sv-card-title">🔥 Immediate Attention <span class="sv-att-count" id="sv-immediate-count">0</span> <button class="sv-link sv-card-link" id="sv-immediate-viewall">View all</button></div>
+            <div class="sv-att-table-head">
+              <span>SHOT</span>
+              <span>ISSUE</span>
+              <span>ASSIGNED TO</span>
+              <span>TIME</span>
+              <span>ACTIONS</span>
+            </div>
+            <div class="sv-list sv-alert-list" id="sv-immediate-list"></div>
+          </section>
+
+          <section class="sv-review-buckets-wrap section">
+            <div class="sv-card-title sv-review-pipeline-title"><span>Review Pipeline</span><button class="sv-link sv-card-link" onclick="SupervisorDashboard.applyQueueFilter('all')">View review queue <span>→</span></button></div>
+            <div class="sv-review-buckets-grid">
+              <section class="sv-card sv-workflow-card sv-bucket-card sv-bucket-card-needs" role="button" tabindex="0" onclick="SupervisorDashboard.applyQueueFilter('needs-review')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();SupervisorDashboard.applyQueueFilter('needs-review')}">
+                <div class="sv-card-title"><span>Needs Review <b id="sv-bucket-needs-count">0</b></span><button class="sv-link sv-card-link" onclick="SupervisorDashboard.applyQueueFilter('needs-review')">View all</button></div>
+                <div class="sv-list sv-bucket-list" id="sv-bucket-needs-list"></div>
+              </section>
+              <section class="sv-card sv-workflow-card sv-bucket-card sv-bucket-card-review" role="button" tabindex="0" onclick="SupervisorDashboard.applyQueueFilter('high-priority')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();SupervisorDashboard.applyQueueFilter('high-priority')}">
+                <div class="sv-card-title"><span>In Review <b id="sv-bucket-review-count">0</b></span><button class="sv-link sv-card-link" onclick="SupervisorDashboard.applyQueueFilter('high-priority')">View all</button></div>
+                <div class="sv-list sv-bucket-list" id="sv-bucket-review-list"></div>
+              </section>
+              <section class="sv-card sv-workflow-card sv-bucket-card sv-bucket-card-approved" role="button" tabindex="0" onclick="SupervisorDashboard.applyQueueFilter('approved')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();SupervisorDashboard.applyQueueFilter('approved')}">
+                <div class="sv-card-title"><span>Recently Approved <b id="sv-bucket-approved-count">0</b></span><button class="sv-link sv-card-link" onclick="SupervisorDashboard.applyQueueFilter('approved')">View all</button></div>
+                <div class="sv-list sv-bucket-list" id="sv-bucket-approved-list"></div>
+              </section>
+            </div>
+          </section>
+
+          <div class="sv-context-zone">
+            <section class="sv-card sv-context-muted" id="sv-context-deadlines-card">
+              <div class="sv-card-title">Upcoming Deadlines</div>
+              <div class="sv-list sv-deadline-list" id="sv-upcoming-deadlines-list"></div>
+            </section>
+
+            <section class="sv-card sv-context-muted" id="sv-context-events-card">
+              <div class="sv-card-title">Critical Events
+                <span class="sv-title-actions">
+                  <button class="sv-mini-pill active" id="sv-act-filter-all" onclick="SupervisorDashboard.setActivityFilter('all')">All</button>
+                  <button class="sv-mini-pill" id="sv-act-filter-errors" onclick="SupervisorDashboard.setActivityFilter('errors')">Errors</button>
+                  <button class="sv-mini-pill" id="sv-act-filter-approvals" onclick="SupervisorDashboard.setActivityFilter('approvals')">Approvals</button>
+                  <button class="sv-mini-pill" id="sv-act-filter-assignments" onclick="SupervisorDashboard.setActivityFilter('assignments')">Assignments</button>
+                </span>
+              </div>
+              <div class="sv-list sv-activity" id="sv-activity-list"></div>
+            </section>
+
+            <section class="sv-card sv-context-muted" id="sv-review-workload-card">
+              <div class="sv-card-title">Review Workload <button class="sv-link sv-card-link">View all</button></div>
+              <div class="sv-list sv-workload-list" id="sv-review-workload-list"></div>
+            </section>
+          </div>
+
+          <section class="sv-card card sv-project-cta-wrap section">
+            <p class="sv-project-cta-helper"><strong>3 items need your attention</strong><span>1 critical • 2 high</span></p>
+            <button class="sv-primary" id="sv-project-cta-btn" onclick="SupervisorDashboard.goToReviewQueue()">Open Attention Hub</button>
+            <button class="sv-secondary" id="sv-project-cta-secondary" onclick="SupervisorDashboard.applyQueueFilter('all')">View all (3)</button>
+          </section>
+
+          <div class="sv-command-palette" id="sv-command-palette">
+            <div class="sv-command-backdrop" onclick="SupervisorDashboardPalette.close()"></div>
+            <div class="sv-command-panel">
+              <input id="sv-command-input" class="sv-command-input" placeholder="Search shots, artists, sims..." oninput="SupervisorDashboardPalette.search(this.value)" onkeydown="SupervisorDashboardPalette.keynav(event)" />
+              <div class="sv-command-results" id="sv-command-results"></div>
+            </div>
+          </div>
+          </div>
+        </div>
+      `;
+    }
+
+    const shots = this._projectShots();
+    const counts = this._counts(shots);
+    const sorter = (a, b) => this._priorityRank(a.priority) - this._priorityRank(b.priority);
+    const setText = (id, value) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const next = String(value);
+      if (el.textContent !== next) this._animateValueTick(el);
+      el.textContent = next;
+    };
+    setText('sv-kpi-needs', counts.needs);
+    setText('sv-kpi-running', counts.running);
+    setText('sv-kpi-cache', counts.cache);
+    setText('sv-kpi-revise', counts.revise);
+    setText('sv-kpi-approved', counts.approved);
+    setText('sv-kpi-failed', counts.failed);
+    this._renderLiveUpdated();
+    const kpiSub = [
+      ['sv-kpi-card-failed', `${counts.failed > 0 ? `↑ ${counts.failed} in last hour` : 'No change'}`],
+      ['sv-kpi-card-needs', 'No change'],
+      ['sv-kpi-card-running', `${counts.running > counts.cache ? '↑ Increasing' : 'No change'}`],
+      ['sv-kpi-card-cache', 'No change'],
+      ['sv-kpi-card-revise', `${counts.revise} pending fixes`],
+      ['sv-kpi-card-approved', 'No change']
+    ];
+    kpiSub.forEach(([id, text]) => {
+      const card = document.getElementById(id);
+      if (!card) return;
+      const em = card.querySelector('em');
+      if (em) em.textContent = text;
+    });
+    const failedCard = document.getElementById('sv-kpi-card-failed');
+    if (failedCard) failedCard.classList.toggle('sv-kpi-critical', counts.failed > 0);
+
+    const insightEl = document.getElementById('sv-insight-list');
+    if (insightEl) {
+      const insights = generateInsights({ shots, counts });
+      const rank = { critical: 0, high: 1, medium: 2 };
+      insightEl.innerHTML = insights
+        .sort((a, b) => rank[a.level] - rank[b.level])
+        .slice(0, 4)
+        .map(i => `
+          <button class="sv-insight-item sv-insight-${i.level}" onclick="${i.action}">
+            <span class="sv-insight-icon">${i.icon}</span>
+            <span class="sv-insight-copy">
+              <strong>${i.title}</strong>
+            </span>
+            <mark class="${i.level === 'critical' ? 'critical' : i.level === 'high' ? 'high' : 'medium'}">${i.level[0].toUpperCase() + i.level.slice(1)}</mark>
+            <em>${i.cta}</em>
+          </button>
+        `).join('');
+      this._animatePanel(['sv-insight-list']);
+    }
+
+    const immediate = getImmediateAttention({ shots, counts }).sort(sorter);
+    const immediateEl = document.getElementById('sv-immediate-list');
+    const immediateCount = document.getElementById('sv-immediate-count');
+    if (immediateCount) immediateCount.textContent = String(immediate.length);
+    if (immediateEl) {
+      immediateEl.innerHTML = immediate.map((s, idx) => {
+        const parts = String(s.issue || '').split('—').map(p => p.trim()).filter(Boolean);
+        const issueTitle = parts[0] || this._statusLabel(s.status).toUpperCase();
+        const issueDetail = parts.slice(1).join(' — ') || parts[0] || 'Requires supervisor attention';
+        const urgency = s.status === 'failed' ? 'Critical' : 'High';
+        return `
+          <div class="sv-att-row ${idx === 0 ? 'sv-att-row-primary' : ''}">
+            <span class="sv-att-shot">
+              <span class="sv-att-thumb ${idx % 3 === 0 ? 'sv-thumb-1' : idx % 3 === 1 ? 'sv-thumb-2' : 'sv-thumb-3'}"></span>
+              <span class="sv-att-shot-copy">
+                <strong>${s.shot}</strong>
+                <small>${s.fxType} Simulation</small>
+              </span>
+            </span>
+            <span class="sv-att-issue">
+              <strong class="${s.status === 'failed' ? 'is-failed' : ''}">${issueTitle}</strong>
+              <small>${issueDetail}</small>
+            </span>
+            <span class="sv-att-assigned">
+              <strong>${s.actor || 'Unassigned'}</strong>
+              <small>${s.actor?.includes('Sim Farm') ? 'Machine' : 'FX Artist'}</small>
+            </span>
+            <span class="sv-att-time">
+              <small>${s.updated}</small>
+              <mark class="${urgency === 'Critical' ? 'critical' : 'high'}">${urgency}</mark>
+            </span>
+            <span class="sv-att-actions">
+              <button onclick="SupervisorDashboard.openShot('${s.shot}')">Open Shot</button>
+              <button class="sv-att-more" aria-label="More actions">&#8942;</button>
+            </span>
+          </div>
+        `;
+      }).join('');
+      this._animatePanel(['sv-immediate-list']);
+    }
+    const immediateViewAll = document.getElementById('sv-immediate-viewall');
+    if (immediateViewAll) immediateViewAll.textContent = `View all (${immediate.length})`;
+
+    const activityEl = document.getElementById('sv-activity-list');
+    if (activityEl) {
+      const repeated = shots.filter(s => /failed|revise/i.test(s.event)).reduce((acc, s) => {
+        const key = s.fxType;
+        acc[key] = (acc[key] || 0) + 1;
+        return acc;
+      }, {});
+      const filtered = shots.filter(s => {
+        if (this.activityFilter === 'errors') return s.status === 'failed' || /failed|revise/i.test(s.event);
+        if (this.activityFilter === 'approvals') return s.status === 'approved' || /approved/i.test(s.event);
+        if (this.activityFilter === 'assignments') return /submitted|review|revise|assigned/i.test(s.event);
+        return s.status === 'failed' || /failed|revise|approved/i.test(s.event);
+      });
+      activityEl.innerHTML = filtered.slice(0, 5).map(s => `
+        <button class="list-item ${repeated[s.fxType] > 1 ? 'sv-repeated-issue' : ''}">
+          <span class="sv-act-icon ${this._activityIconClass(s)}">${this._activityIconSvg(this._activityIconClass(s))}</span>
+          <span class="sv-act-copy">
+            <strong>${this._projectPrefix(s)}${s.shot.toLowerCase()}_fx_${s.version} ${s.event}</strong>
+            <span>by ${s.actor}</span>
+          </span>
+          <em>${s.updated}</em>
+        </button>
+      `).join('');
+      ['all', 'errors', 'approvals', 'assignments'].forEach(key => {
+        const btn = document.getElementById(`sv-act-filter-${key}`);
+        if (btn) btn.classList.toggle('active', this.activityFilter === key);
+      });
+      this._animatePanel(['sv-activity-list']);
+    }
+
+    const makeBucketRow = (s, idx, tone = 'blue') => {
+      const thumbClass = idx % 3 === 0 ? 'sv-thumb-1' : idx % 3 === 1 ? 'sv-thumb-2' : 'sv-thumb-3';
+      const statusClass = s.status === 'failed'
+        ? 'critical'
+        : (s.priority === 'high' ? 'high' : s.priority === 'medium' ? 'medium' : 'low');
+      const statusLabel = statusClass === 'critical'
+        ? 'Critical'
+        : statusClass[0].toUpperCase() + statusClass.slice(1);
+      const submittedDuration = String(s.updated || '').trim();
+      return `
+        <div class="list-item sv-bucket-compact sv-bucket-${tone}">
+          <span class="sv-bucket-leading">
+            <span class="sv-bucket-thumb-dot ${thumbClass}"></span>
+            <span class="sv-bucket-text">
+              <strong>${s.shot} · ${s.fxType.split(' ')[0]}</strong>
+              <small>${tone === 'blue' ? `${s.actor || 'Artist TBD'} (Reviewing)` : (tone === 'green' ? `Approved by ${s.actor || 'FX Lead'}` : `${s.actor || 'Artist TBD'}`)}</small>
+            </span>
+          </span>
+          <span class="sv-bucket-right">
+            <small class="sv-bucket-time">${tone === 'blue' ? `${submittedDuration.replace(/\s*ago$/i, '')} in review` : submittedDuration}</small>
+            ${tone === 'green' ? '' : `<mark class="${statusClass}">${statusLabel}</mark>`}
+          </span>
+        </div>
+      `;
+    };
+
+    const pipeline = getReviewPipeline({ shots, counts });
+    const needsBucketEl = document.getElementById('sv-bucket-needs-list');
+    if (needsBucketEl) {
+      const allNeeds = pipeline.needs;
+      const needs = allNeeds.slice(0, 3);
+      const needsCountEl = document.getElementById('sv-bucket-needs-count');
+      if (needsCountEl) needsCountEl.textContent = String(allNeeds.length);
+      needsBucketEl.innerHTML = needs.length
+        ? needs.map((s, idx) => makeBucketRow(s, idx, 'orange')).join('')
+        : `
+          <div class="sv-empty-state">
+            <strong>No shots ready for review</strong>
+            <span>You're all caught up</span>
+          </div>
+        `;
+      this._animatePanel(['sv-bucket-needs-list']);
+    }
+
+    const reviewBucketEl = document.getElementById('sv-bucket-review-list');
+    if (reviewBucketEl) {
+      const allInReview = pipeline.inReview;
+      const inReview = allInReview.slice(0, 3);
+      const reviewCountEl = document.getElementById('sv-bucket-review-count');
+      if (reviewCountEl) reviewCountEl.textContent = String(allInReview.length);
+      reviewBucketEl.innerHTML = inReview.map((s, idx) => makeBucketRow(s, idx, 'blue')).join('');
+      this._animatePanel(['sv-bucket-review-list']);
+    }
+
+    const approvedBucketEl = document.getElementById('sv-bucket-approved-list');
+    if (approvedBucketEl) {
+      const allApproved = pipeline.approved;
+      const approved = allApproved.slice(0, 3);
+      const approvedCountEl = document.getElementById('sv-bucket-approved-count');
+      if (approvedCountEl) approvedCountEl.textContent = String(allApproved.length);
+      approvedBucketEl.innerHTML = approved.length
+        ? approved.map((s, idx) => makeBucketRow(s, idx, 'green')).join('')
+        : `
+          <div class="sv-empty-state">
+            <strong>No recent approvals</strong>
+            <span>Approved shots will appear here</span>
+          </div>
+        `;
+      this._animatePanel(['sv-bucket-approved-list']);
+    }
+
+    const workloadEl = document.getElementById('sv-review-workload-list');
+    if (workloadEl) {
+      const loadActors = this.artistDirectory.map(a => a.name);
+      const capacities = loadActors.reduce((acc, name) => ({ ...acc, [name]: 6 }), {});
+      const weightedLoad = actor => shots.reduce((sum, s) => {
+        if (s.actor !== actor) return sum;
+        if (s.status === 'failed') return sum + 3;
+        if (s.status === 'revise') return sum + 2;
+        if (s.status === 'needs_review' || s.status === 'sim_running') return sum + 1.5;
+        return sum + 1;
+      }, 0);
+      const reviewers = loadActors.map((name) => ({
+        name,
+        count: Math.max(0, Math.round(weightedLoad(name))),
+        capacity: capacities[name],
+        isCurrent: name === User.current.name
+      })).sort((a, b) => b.count - a.count);
+      const max = Math.max(...reviewers.map(r => Math.max(r.count, r.capacity)), 1);
+      workloadEl.innerHTML = reviewers.map(r => `
+        <button class="list-item sv-workload-item ${r.isCurrent ? 'is-current' : ''} ${r.count > r.capacity ? 'is-overload' : ''} ${r.count === 0 ? 'is-low' : ''} ${r.count >= Math.round(r.capacity * 0.7) && r.count <= r.capacity ? 'is-busy' : ''} ${r.count > 0 && r.count < Math.round(r.capacity * 0.7) ? 'is-balanced' : ''}">
+          <span class="sv-workload-avatar ${r.isCurrent ? 'is-you' : ''}">
+            <img src="${this._artistAvatar(r.name)}" alt="${r.name}" />
+          </span>
+          <span class="sv-workload-body">
+            <span class="sv-workload-head">
+              <strong>${r.name}${r.isCurrent ? ' (You)' : ''}</strong>
+              <em><b>${r.count}</b> / ${r.capacity} shots</em>
+            </span>
+            <span class="sv-workload-bar"><i class="sv-workload-fill" data-fill="${Math.max(8, Math.round((r.count / max) * 100))}"></i></span>
+          </span>
+          <mark class="${r.count > r.capacity ? 'critical' : r.count >= Math.round(r.capacity * 0.7) ? 'high' : r.count === 0 ? 'low' : 'green'}">${r.count > r.capacity ? 'Overloaded' : r.count >= Math.round(r.capacity * 0.7) ? 'High' : r.count === 0 ? 'Low' : 'Balanced'}</mark>
+        </button>
+      `).join('');
+      workloadEl.querySelectorAll('.sv-workload-fill').forEach((fill) => {
+        const width = Number(fill.getAttribute('data-fill') || 8);
+        fill.style.width = `${Math.max(8, Math.min(100, width))}%`;
+      });
+      this._animatePanel(['sv-review-workload-list']);
+    }
+
+    const updatedEl = document.getElementById('sv-updated-list');
+    if (updatedEl) {
+      updatedEl.innerHTML = shots.slice(0, 6).map(s => `
+        <button class="list-item">
+          <strong>${this._projectPrefix(s)}${s.shot}</strong>
+          <span>${s.fxType}</span>
+          <span>${s.version}</span>
+          <mark class="${this._statusMarkClass(s.status)}">${this._statusLabel(s.status)}</mark>
+          <em>${s.updated}</em>
+        </button>
+      `).join('');
+      this._animatePanel(['sv-updated-list']);
+    }
+
+    const deadlinesEl = document.getElementById('sv-upcoming-deadlines-list');
+    if (deadlinesEl) {
+      const deadlines = shots
+        .filter(s => s.priority === 'high' || s.status === 'needs_review' || s.status === 'revise')
+        .slice(0, 5)
+        .map((s, idx) => ({
+          when: idx === 0 ? 'Today' : idx < 3 ? 'Tomorrow' : 'This Week',
+          time: idx === 0 ? '4:30 PM' : idx < 3 ? '11:00 AM' : '2:00 PM',
+          dependency: s.status === 'failed' ? 'Blocked by simulation' : s.status === 'needs_review' ? 'Awaiting review' : 'On track',
+          ...s
+        }));
+      deadlinesEl.innerHTML = deadlines.map(s => `
+        <button class="list-item sv-deadline-item ${s.priority === 'high' ? 'is-high' : ''}">
+          <span class="sv-deadline-when">${s.when}</span>
+          <span class="sv-deadline-shot">
+            <strong>${s.shot}</strong>
+            <span>${s.fxType} Simulation · ${s.dependency}</span>
+          </span>
+          <span class="sv-deadline-time">${s.time}</span>
+          <mark class="${this._riskLabel(s).cls}">${this._riskLabel(s).label}</mark>
+        </button>
+      `).join('');
+      this._animatePanel(['sv-upcoming-deadlines-list']);
+    }
+
+    const ctaHelper = document.querySelector('#sv-project-dashboard .sv-project-cta-helper');
+    const ctaBtn = document.getElementById('sv-project-cta-btn');
+    const ctaSecondary = document.getElementById('sv-project-cta-secondary');
+    if (ctaHelper && ctaBtn) {
+      let helperTop = '3 items need your attention';
+      let helperSub = '1 critical • 2 high';
+      let primaryLabel = 'Open Attention Hub';
+      let secondaryLabel = `View all (${Math.max(1, counts.failed + counts.needs)})`;
+      if (counts.failed > 0) {
+        helperTop = `${counts.failed} ${counts.failed === 1 ? 'item' : 'items'} need your attention`;
+        helperSub = `${counts.failed} critical • ${Math.max(0, counts.needs)} high`;
+        primaryLabel = `Resolve ${counts.failed} Failed Sim${counts.failed === 1 ? '' : 's'}`;
+      } else if (counts.needs > 0) {
+        helperTop = `${counts.needs} items need your attention`;
+        helperSub = `${counts.needs} high priority`;
+        primaryLabel = `Review ${counts.needs} Critical Shot${counts.needs === 1 ? '' : 's'}`;
+      } else {
+        helperTop = 'No critical blockers right now';
+        helperSub = 'Queue is stable';
+        primaryLabel = 'Go to Review Queue';
+      }
+      ctaHelper.innerHTML = `<strong>${helperTop}</strong><span>${helperSub}</span>`;
+      ctaBtn.textContent = primaryLabel;
+      if (ctaSecondary) ctaSecondary.textContent = secondaryLabel;
+    }
+
+    const heading = document.getElementById('sv-project-heading');
+    const subheading = document.getElementById('sv-project-subheading');
+    if (heading) heading.textContent = `${this.currentProject} Project Supervisor Overview`;
+    if (subheading) subheading.textContent = `${this.currentProject} project pipeline health and critical triage.`;
+    if (typeof SupervisorInsights !== 'undefined') {
+      SupervisorInsights.render(counts, shots, this.currentProject);
+    }
+    this._bindDependencyHover();
+  },
+
+  renderGlobal() {
+    const shots = this._allShots();
+    const counts = this._counts(shots);
+    const setText = (id, value) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = String(value);
+    };
+    setText('sv-global-needs', counts.needs);
+    setText('sv-global-running', counts.running);
+    setText('sv-global-cache', counts.cache);
+    setText('sv-global-revise', counts.revise);
+    setText('sv-global-approved', counts.approved);
+    setText('sv-global-failed', counts.failed);
+    setText('sv-global-needs-sub', `${counts.overdue} overdue`);
+    setText('sv-global-running-sub', `${counts.running} active sims`);
+    setText('sv-global-cache-sub', `${Math.max(0, counts.cache - counts.needs)} ready now`);
+    setText('sv-global-revise-sub', `${counts.revise} pending fixes`);
+    setText('sv-global-approved-sub', `${counts.approved} approved`);
+    setText('sv-global-failed-sub', `${counts.failed} critical`);
+    setText('sv-global-stat-failed', counts.failed);
+    setText('sv-global-stat-blocked', counts.failed + counts.revise);
+    setText('sv-global-stat-needs', counts.needs);
+
+    const immediateEl = document.getElementById('sv-global-immediate-list');
+    if (immediateEl) {
+      const globalThumbs = [
+        'https://images.unsplash.com/photo-1581091870627-3d1c4c4e1f1f',
+        'https://images.unsplash.com/photo-1600585154340-be6161a56a0c',
+        'https://images.unsplash.com/photo-1500530855697-b586d89ba3ee',
+        'https://images.unsplash.com/photo-1475688621402-4257c8128e58'
+      ];
+      const immediate = shots
+        .filter(s => s.status === 'failed' || s.overdue || (s.priority === 'high' && s.needsSupervisor))
+        .sort((a, b) => {
+          const score = x => (x.status === 'failed' ? 0 : x.overdue ? 1 : x.priority === 'high' ? 2 : 3);
+          const byScore = score(a) - score(b);
+          if (byScore !== 0) return byScore;
+          return this._priorityRank(a.priority) - this._priorityRank(b.priority);
+        })
+        .slice(0, 4);
+      immediateEl.innerHTML = immediate.map((s, idx) => {
+        const parts = String(s.issue || '').split('—').map(p => p.trim()).filter(Boolean);
+        const issueTitle = parts[0] || this._statusLabel(s.status).toUpperCase();
+        const issueDetail = parts.slice(1).join(' — ') || s.issue || 'Requires supervisor attention';
+        const urgency = s.status === 'failed' ? 'Critical' : (s.priority === 'high' ? 'High' : 'Medium');
+        return `
+          <button class="list-item sv-attention-item ${idx === 0 ? 'sv-attention-dominant' : ''}" data-urgency="${urgency.toLowerCase()}">
+            <img class="sv-thumb sv-global-thumb" src="${globalThumbs[idx % globalThumbs.length]}" alt="${s.fxType} reference" loading="lazy" />
+            <span class="sv-att-shot">
+              <strong>[${s.project}] ${s.shot}</strong>
+              <span>${s.fxType} Simulation</span>
+            </span>
+            <span class="sv-att-issue">
+              <b>${issueTitle}</b>
+              <small>${issueDetail}</small>
+            </span>
+            <mark class="${urgency.toLowerCase()}">${urgency}</mark>
+          </button>
+        `;
+      }).join('');
+    }
+
+    const byProjectEl = document.getElementById('sv-global-project-pipeline');
+    if (byProjectEl) {
+      const grouped = ['Echo Point', 'Nova', 'Atlas'].map(project => {
+        const subset = shots.filter(s => s.project === project);
+        return {
+          project,
+          needs: subset.filter(s => s.status === 'needs_review').length,
+          running: subset.filter(s => s.status === 'sim_running').length,
+          failed: subset.filter(s => s.status === 'failed').length
+        };
+      });
+      const totalNeeds = grouped.reduce((a, g) => a + g.needs, 0);
+      const totalRunning = grouped.reduce((a, g) => a + g.running, 0);
+      const totalFailed = grouped.reduce((a, g) => a + g.failed, 0);
+      byProjectEl.innerHTML = grouped.map(g => `
+        <button class="list-item">
+          <strong>${g.project}</strong>
+          <span>${g.needs}</span>
+          <span>${g.running}</span>
+          <span>${g.failed}</span>
+        </button>
+      `).join('');
+      byProjectEl.insertAdjacentHTML('afterbegin', `
+        <button class="list-item">
+          <strong>Project</strong>
+          <span>Needs Review</span>
+          <span>Sim Running</span>
+          <span>Failed Sims</span>
+        </button>
+      `);
+      byProjectEl.insertAdjacentHTML('beforeend', `
+        <button class="list-item">
+          <strong>Total</strong>
+          <span>${totalNeeds}</span>
+          <span>${totalRunning}</span>
+          <span>${totalFailed}</span>
+        </button>
+      `);
+    }
+
+    const actEl = document.getElementById('sv-global-activity');
+    if (actEl) {
+      actEl.innerHTML = shots.slice(0, 6).map(s => `
+        <button class="list-item">
+          <span class="sv-act-icon ${this._activityIconClass(s)}">${this._activityIconSvg(this._activityIconClass(s))}</span>
+          <span class="sv-act-copy">
+            <strong>[${s.project}] ${s.shot.toLowerCase()}_fx_${s.version} ${s.event}</strong>
+            <span>by ${s.actor}</span>
+          </span>
+          <em>${s.updated}</em>
+        </button>
+      `).join('');
+    }
+
+    const globalActions = document.getElementById('sv-global-actions');
+    if (globalActions) {
+      globalActions.innerHTML = `
+        <button class="list-item" onclick="SupervisorDashboard.applyQueueFilter('failed')">Review Failed Sims (All Projects) <span>${counts.failed}</span></button>
+        <button class="list-item" onclick="SupervisorDashboard.applyQueueFilter('needs-review')">Review Needs Review (All Projects) <span>${counts.needs}</span></button>
+        <button class="list-item" onclick="SupervisorDashboard.applyQueueFilter('high-priority')">Review High Priority Shots <span>${shots.filter(s=>s.priority==='high').length}</span></button>
+        <button class="list-item" onclick="SupervisorDashboard.applyQueueFilter('cache-ready')">Open Review Queue (All Projects) <span>${counts.cache}</span></button>
+      `;
+    }
+
+    const globalUpdated = document.getElementById('sv-global-updated');
+    if (globalUpdated) {
+      globalUpdated.innerHTML = shots.slice(0, 5).map(s => `
+        <button class="list-item">
+          <strong>[${s.project}] ${s.shot}</strong>
+          <span>${s.fxType}</span>
+          <span>${s.version}</span>
+          <mark class="${this._statusMarkClass(s.status)}">${this._statusLabel(s.status)}</mark>
+          <em>${s.updated}</em>
+        </button>
+      `).join('');
+    }
+
+    const globalStatusList = document.getElementById('sv-global-status-list');
+    if (globalStatusList) {
+      globalStatusList.innerHTML = `
+        <button class="list-item"><strong>Sim Running</strong><span>${counts.running}</span></button>
+        <button class="list-item"><strong>Waiting Cache</strong><span>${Math.max(0, counts.running - counts.cache)}</span></button>
+        <button class="list-item"><strong>Ready for Review</strong><span>${counts.needs + counts.cache}</span></button>
+        <button class="list-item"><strong>Blocked</strong><span>${counts.failed + counts.revise}</span></button>
+      `;
+    }
+  },
+
+  renderReviewQueue() {
+    const root = document.getElementById('sv-review-queue-view');
+    if (!root) return;
+    const context = this._queueContext();
+    const state = this.reviewQueueState;
+    const rows = this.getReviewQueueData(context, this.currentProject)
+      .filter((row) => state.status === 'all' || row.status === state.status)
+      .filter((row) => state.department === 'all' || row.department === state.department)
+      .filter((row) => state.priority === 'all' || row.priority === state.priority)
+      .filter((row) => {
+        const q = String(state.query || '').trim().toLowerCase();
+        if (!q) return true;
+        return `${row.shot} ${row.fxType} ${row.task} ${row.actor}`.toLowerCase().includes(q);
+      });
+    const statusRank = { failed: 0, revise: 1, needs_review: 2, sim_running: 3, cache_ready: 4, approved: 5 };
+    const priorityRank = { high: 0, medium: 1, low: 2 };
+    rows.sort((a, b) => {
+      const dir = state.sortDir === 'asc' ? 1 : -1;
+      if (state.sortBy === 'shot') return String(a.shot).localeCompare(String(b.shot)) * dir;
+      if (state.sortBy === 'task') return String(a.task).localeCompare(String(b.task)) * dir;
+      if (state.sortBy === 'version') return String(a.version).localeCompare(String(b.version)) * dir;
+      if (state.sortBy === 'status') return ((statusRank[a.status] ?? 99) - (statusRank[b.status] ?? 99)) * dir;
+      if (state.sortBy === 'priority') return ((priorityRank[a.priority] ?? 99) - (priorityRank[b.priority] ?? 99)) * dir;
+      if (state.sortBy === 'submittedBy') return String(a.actor || '').localeCompare(String(b.actor || '')) * dir;
+      const hours = (v) => this._hoursFromUpdated(v);
+      return (hours(a.updated) - hours(b.updated)) * dir;
+    });
+    const total = rows.length;
+    const pageSize = Number(state.pageSize || 25);
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const page = Math.min(Math.max(1, Number(state.page || 1)), totalPages);
+    const start = (page - 1) * pageSize;
+    const paged = rows.slice(start, start + pageSize);
+    const showProject = context === 'all-projects';
+    const statusPill = (status) => `<span class="sv-rq-status ${status}">${this._statusLabel(status)}</span>`;
+    const priorityPill = (priority) => `<span class="sv-rq-priority"><i class="${priority}"></i>${priority[0].toUpperCase() + priority.slice(1)}</span>`;
+    const sortArrow = (key) => state.sortBy === key ? (state.sortDir === 'asc' ? '↑' : '↓') : '↕';
+    const sortTh = (label, key) => `<button class="sv-rq-sort ${state.sortBy === key ? 'active' : ''}" onclick="SupervisorDashboard.setReviewQueueSort('${key}')">${label} <span>${sortArrow(key)}</span></button>`;
+    const heading = context === 'all-projects' ? 'Global FX Review Queue' : `${this.currentProject} Project Review Queue`;
+    const subheading = context === 'all-projects'
+      ? 'Cross-project shot submissions, priorities, and review status.'
+      : `${this.currentProject} shot submissions, priorities, and review status.`;
+    root.innerHTML = `
+      <div class="dashboard-header page-header">
+        <div class="sv-heading-row">
+          <div>
+            <h1>${heading}</h1>
+            <p>${subheading}</p>
+          </div>
+          <div class="sv-updated">Last updated: 2m ago</div>
+        </div>
+      </div>
+      <section class="sv-card sv-review-queue-screen">
+        <div class="sv-review-toolbar">
+          <div class="sv-review-filters">
+            <label>Group By
+              <select onchange="SupervisorDashboard.updateReviewQueueFilter('groupBy', this.value)">
+                <option value="shot" ${state.groupBy === 'shot' ? 'selected' : ''}>Shot</option>
+                <option value="artist" ${state.groupBy === 'artist' ? 'selected' : ''}>Artist</option>
+              </select>
+            </label>
+            <label>Status
+              <select onchange="SupervisorDashboard.updateReviewQueueFilter('status', this.value)">
+                <option value="all" ${state.status === 'all' ? 'selected' : ''}>All</option>
+                <option value="needs_review" ${state.status === 'needs_review' ? 'selected' : ''}>Needs Review</option>
+                <option value="revise" ${state.status === 'revise' ? 'selected' : ''}>Revise</option>
+                <option value="sim_running" ${state.status === 'sim_running' ? 'selected' : ''}>In Review</option>
+                <option value="approved" ${state.status === 'approved' ? 'selected' : ''}>Approved</option>
+              </select>
+            </label>
+            <label>Department
+              <select onchange="SupervisorDashboard.updateReviewQueueFilter('department', this.value)">
+                <option value="all" ${state.department === 'all' ? 'selected' : ''}>All</option>
+                <option value="FX" ${state.department === 'FX' ? 'selected' : ''}>FX</option>
+              </select>
+            </label>
+            <label>Priority
+              <select onchange="SupervisorDashboard.updateReviewQueueFilter('priority', this.value)">
+                <option value="all" ${state.priority === 'all' ? 'selected' : ''}>All</option>
+                <option value="high" ${state.priority === 'high' ? 'selected' : ''}>High</option>
+                <option value="medium" ${state.priority === 'medium' ? 'selected' : ''}>Medium</option>
+                <option value="low" ${state.priority === 'low' ? 'selected' : ''}>Low</option>
+              </select>
+            </label>
+          </div>
+          <div class="sv-review-tools">
+            <input class="sv-review-search" placeholder="Search shots..." value="${String(state.query || '').replace(/"/g, '&quot;')}" oninput="SupervisorDashboard.updateReviewQueueFilter('query', this.value)" />
+            <button class="sv-review-btn">Filters</button>
+            <button class="sv-review-icon" aria-label="View toggle">&#9776;</button>
+          </div>
+        </div>
+        <div class="sv-review-table-wrap">
+          <table class="sv-review-table">
+            <thead>
+              <tr>
+                ${showProject ? '<th>PROJECT</th>' : ''}
+                <th>${sortTh('SHOT', 'shot')}</th>
+                <th>${sortTh('TASK', 'task')}</th>
+                <th>${sortTh('LATEST VERSION', 'version')}</th>
+                <th>${sortTh('STATUS', 'status')}</th>
+                <th>${sortTh('PRIORITY', 'priority')}</th>
+                <th>${sortTh('SUBMITTED BY', 'submittedBy')}</th>
+                <th>${sortTh('UPDATED', 'updated')}</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              ${paged.map((row) => `
+                <tr onclick="SupervisorDashboard.openShot('${row.shot}')">
+                  ${showProject ? `<td><span class="sv-rq-project">${row.project}</span></td>` : ''}
+                  <td><div class="sv-rq-shot"><span class="sv-rq-thumb sv-thumb-${(row.thumbClass % 3) + 1}"></span><span><strong>${row.shot}</strong></span></div></td>
+                  <td><strong>${row.task}</strong></td>
+                  <td><strong>${row.version}</strong><small><span class="sv-rq-rev">REV</span></small></td>
+                  <td>${statusPill(row.status)}</td>
+                  <td>${priorityPill(row.priority)}</td>
+                  <td><span class="sv-rq-user"><img src="${this._artistAvatar(row.actor || 'Unassigned')}" alt="${row.actor || 'Unassigned'}" /><span><strong>${row.actor || 'Unassigned'}</strong><small>Artist</small></span></span></td>
+                  <td>${row.updated}</td>
+                  <td>
+                    <div class="sv-rq-actions">
+                      <button class="sv-rq-kebab" onclick="SupervisorDashboard.toggleReviewQueueMenu(event, '${row.shot}')">&#8942;</button>
+                      <div class="sv-rq-actions-menu" onclick="event.stopPropagation()">
+                        <button onclick="SupervisorDashboard.reviewQueueAction(event,'open-shot','${row.shot}')">Open Shot</button>
+                        <button onclick="SupervisorDashboard.reviewQueueAction(event,'open-review','${row.shot}')">Open in Review</button>
+                        <button onclick="SupervisorDashboard.reviewQueueAction(event,'assign','${row.shot}')">Assign / Reassign Artist</button>
+                        <button onclick="SupervisorDashboard.reviewQueueAction(event,'status','${row.shot}')">Change Status</button>
+                        <button onclick="SupervisorDashboard.reviewQueueAction(event,'priority','${row.shot}')">Set Priority</button>
+                        <button onclick="SupervisorDashboard.reviewQueueAction(event,'versions','${row.shot}')">View Versions</button>
+                        <button onclick="SupervisorDashboard.reviewQueueAction(event,'notes','${row.shot}')">View Notes / Add Note</button>
+                        <button onclick="SupervisorDashboard.reviewQueueAction(event,'activity','${row.shot}')">View Activity Log</button>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+        <div class="sv-review-pagination">
+          <span>Showing ${total === 0 ? 0 : start + 1}-${Math.min(start + pageSize, total)} of ${total} shots</span>
+          <div class="sv-review-pages">
+            <button ${page <= 1 ? 'disabled' : ''} onclick="SupervisorDashboard.setReviewQueuePage(${Math.max(1, page - 1)})">‹</button>
+            ${Array.from({ length: totalPages }, (_, i) => i + 1).map((p) => `<button class="${p === page ? 'active' : ''}" onclick="SupervisorDashboard.setReviewQueuePage(${p})">${p}</button>`).join('')}
+            <button ${page >= totalPages ? 'disabled' : ''} onclick="SupervisorDashboard.setReviewQueuePage(${Math.min(totalPages, page + 1)})">›</button>
+          </div>
+          <label>Rows per page:
+            <select onchange="SupervisorDashboard.updateReviewQueueFilter('pageSize', Number(this.value))">
+              <option value="10" ${pageSize === 10 ? 'selected' : ''}>10</option>
+              <option value="25" ${pageSize === 25 ? 'selected' : ''}>25</option>
+              <option value="50" ${pageSize === 50 ? 'selected' : ''}>50</option>
+            </select>
+          </label>
+        </div>
+      </section>
+    `;
+    if (!this._reviewQueueCloseBound) {
+      document.addEventListener('click', () => this.closeReviewQueueMenus());
+      this._reviewQueueCloseBound = true;
+    }
+  },
+
+  applyQueueFilter(filter) {
+    this.currentFilter = filter;
+    showToast('info', `Review Queue filter: ${String(filter).replace('-', ' ')}`);
+  },
+
+  setActivityFilter(filter) {
+    this.activityFilter = filter;
+    if (this.currentProject !== 'all') this.renderProject();
+  },
+
+  openShot(shot) {
+    showToast('info', `Opening ${shot}`);
+  },
+
+  viewLogs(shot) {
+    showToast('info', `Viewing logs for ${shot}`);
+  },
+
+  assignFix(shot) {
+    this.flashFailure(shot);
+    showToast('info', `Assigning fix for ${shot}`);
+  },
+
+  quickDecision(shot, action) {
+    showToast('info', `${action === 'approve' ? 'Approved' : 'Sent back'} ${shot}`);
+  },
+
+  flashFailure(shot) {
+    const root = document.getElementById('sv-project-dashboard');
+    if (!root) return;
+    root.querySelectorAll('.sv-attention-item').forEach((item) => {
+      const strong = item.querySelector('.sv-att-col-shot strong');
+      if (!strong || !strong.textContent.includes(shot)) return;
+      item.classList.remove('sv-error-flash');
+      void item.offsetWidth;
+      item.classList.add('sv-error-flash');
+    });
+  },
+
+  _artistAvatar(name) {
+    if (this.artistAvatarMap && this.artistAvatarMap[name]) return this.artistAvatarMap[name];
+    return `https://api.dicebear.com/9.x/personas/svg?seed=${encodeURIComponent(name)}`;
+  },
+
+  goToReviewQueue() {
+    const shots = this._filterForQueue(this.currentProject === 'all' ? this._allShots() : this._projectShots(), this.currentFilter || 'needs-review');
+    const tbody = document.getElementById('sv-queue-body');
+    if (tbody) {
+      tbody.innerHTML = shots.map(s => `
+        <tr>
+          <td>${s.project}</td>
+          <td>${s.shot}</td>
+          <td>${s.fxType}</td>
+          <td>${this._statusLabel(s.status)}</td>
+          <td>${s.priority[0].toUpperCase() + s.priority.slice(1)}</td>
+        </tr>
+      `).join('');
+    }
+    const modal = document.getElementById('sv-queue-modal');
+    if (modal) modal.classList.remove('is-hidden');
+
+    const top = shots[0];
+    if (top) {
+      const label = document.querySelector('.rm-shot-label');
+      if (label) label.textContent = `[${top.project}] ${top.shot}_fx_${top.version}`;
+    }
+    if (typeof ReviewMode !== 'undefined' && typeof ReviewMode.enter === 'function') {
+      ReviewMode.enter();
+      showToast('info', 'Opened FX Review Queue');
+      return;
+    }
+    showToast('info', 'FX Review Queue is not available in this build');
+  },
+
+  goToGlobalReviewQueue() {
+    this.currentProject = 'all';
+    const select = document.getElementById('sv-project-switcher');
+    if (select) select.value = 'all';
+    this.currentFilter = 'needs-review';
+    this.goToReviewQueue();
+  },
+
+  closeQueue() {
+    const modal = document.getElementById('sv-queue-modal');
+    if (modal) modal.classList.add('is-hidden');
+  },
+
+  init() {
+    const select = document.getElementById('sv-project-switcher');
+    if (select) select.value = this.currentProject;
+    this._normalizeShotActors();
+    if (!this._liveTimer) {
+      this._liveTimer = setInterval(() => {
+        this._liveSeconds = (this._liveSeconds + 1) % 3600;
+        this._renderLiveUpdated();
+      }, 1000);
+    }
+    this.render();
+    SupervisorUserMenu.applyHeaderProfile();
+  }
+};
+window.SupervisorDashboard = SupervisorDashboard;
+
+const SupervisorDashboardPalette = {
+  activeIndex: 0,
+  _shots() {
+    return SupervisorDashboard.currentProject === 'all' ? SupervisorDashboard._allShots() : SupervisorDashboard._projectShots();
+  },
+  open(options = {}) {
+    const root = document.getElementById('sv-command-palette');
+    const input = document.getElementById('sv-command-input');
+    if (!root) return;
+    root.classList.add('open');
+    if (!options.keep_results) this.search('');
+    if (!options.keep_focus) setTimeout(() => input?.focus(), 0);
+  },
+  close() {
+    const root = document.getElementById('sv-command-palette');
+    if (root) root.classList.remove('open');
+  },
+  search(query) {
+    const q = String(query || '').trim().toLowerCase();
+    const out = document.getElementById('sv-command-results');
+    if (!out) return;
+    const shots = this._shots().filter(s => !q || `${s.shot} ${s.fxType} ${s.actor} ${s.status}`.toLowerCase().includes(q)).slice(0, 8);
+    this.activeIndex = 0;
+    out.innerHTML = shots.map((s, idx) => `
+      <button class="sv-command-item ${idx === 0 ? 'active' : ''}" data-index="${idx}" onclick="SupervisorDashboard.openShot('${s.shot}');SupervisorDashboardPalette.close()">
+        <strong>${s.shot}</strong>
+        <span>${s.fxType} · ${SupervisorDashboard._statusLabel(s.status)} · ${s.actor || 'Unassigned'}</span>
+      </button>
+    `).join('') || '<div class="sv-command-empty">No matches</div>';
+  },
+  keynav(event) {
+    const items = Array.from(document.querySelectorAll('#sv-command-results .sv-command-item'));
+    if (!items.length) return;
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      this.activeIndex = Math.min(items.length - 1, this.activeIndex + 1);
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      this.activeIndex = Math.max(0, this.activeIndex - 1);
+    } else if (event.key === 'Enter') {
+      event.preventDefault();
+      items[this.activeIndex]?.click();
+      return;
+    } else {
+      return;
+    }
+    items.forEach((el, i) => el.classList.toggle('active', i === this.activeIndex));
+  }
+};
+window.SupervisorDashboardPalette = SupervisorDashboardPalette;
+document.addEventListener('keydown', (event) => {
+  if ((event.metaKey || event.ctrlKey) && String(event.key).toLowerCase() === 'k') {
+    event.preventDefault();
+    SupervisorDashboardPalette.open();
+  }
+  if (event.key === 'Escape') SupervisorDashboardPalette.close();
+});
+
+const SupervisorInsights = {
+  toggle() {
+    const panel = document.getElementById('sv-insights-panel');
+    if (!panel) return;
+    panel.classList.toggle('open');
+  },
+
+  close() {
+    const panel = document.getElementById('sv-insights-panel');
+    if (!panel) return;
+    panel.classList.remove('open');
+    panel.classList.remove('compact');
+  },
+
+  collapse() {
+    const panel = document.getElementById('sv-insights-panel');
+    if (!panel) return;
+    panel.classList.toggle('compact');
+    const btn = document.getElementById('sv-insights-collapse');
+    if (btn) btn.textContent = panel.classList.contains('compact') ? 'Expand' : 'Collapse';
+  },
+
+  render(counts, shots, project) {
+    const issues = document.getElementById('sv-insights-issues');
+    const actions = document.getElementById('sv-insights-actions-list');
+    const notes = document.getElementById('sv-insights-notes');
+    if (!issues || !actions || !notes) return;
+
+    const failed = counts.failed;
+    const overdue = counts.overdue;
+    const running = counts.running;
+    const bottleneck = running > counts.cache;
+    const topFailed = shots.filter(s => s.status === 'failed').slice(0, 2).map(s => `${s.shot} (${s.fxType})`);
+
+    issues.innerHTML = `
+      <li>${failed} failed sim${failed === 1 ? '' : 's'}${topFailed.length ? `: ${topFailed.join(', ')}` : ''}</li>
+      <li>${overdue} overdue shot${overdue === 1 ? '' : 's'} pending supervisor review</li>
+      <li>${bottleneck ? 'Sim-running queue exceeds cache-ready throughput (bottleneck detected)' : 'No major sim queue bottleneck detected'}</li>
+    `;
+
+    actions.innerHTML = `
+      <li>Review failed sims and unblock pipeline first</li>
+      <li>Approve cache-ready shots to reduce queue pressure</li>
+      <li>Check long-running sims and investigate delays</li>
+    `;
+
+    notes.textContent = `Assistant summary for ${project}: prioritize critical failures, then clear overdue approvals to stabilize throughput.`;
+  }
+};
+window.SupervisorInsights = SupervisorInsights;
+
+const VersionStore = {
+  versions: Store.get('frameshift.versions', DEFAULT_VERSIONS),
+  activeVersion: Store.get('frameshift.activeVersion', 'v012'),
+  nextNum: 13,
+
+  get(tag)     { return this.versions.find(v => v.tag === tag); },
+  getActive()  { return this.get(this.activeVersion); },
+  forCurrentTask() {
+    const current = typeof TaskFlow !== 'undefined' ? TaskFlow.current : 'SH_0100';
+    return this.versions.filter(v => (v.task || current) === current);
+  },
+  count()      { return this.forCurrentTask().length; },
+
+  select(tag) {
+    if (!this.get(tag)) return;
+    this.activeVersion = tag;
+    this.persist();
+    Render.all();
+  },
+
+  updateStatus(tag, status) {
+    const version = this.get(tag);
+    if (!version) return;
+    version.status = status;
+    this.activeVersion = tag;
+    this.persist();
+    Render.all();
+  },
+
+  addVersion(filename, sizeStr, taskId) {
+    // Validate via VersionState: uploading only allowed when current is working/revise
+    const cur = this.getActive();
+    if (cur && !VersionState.STATES[cur.status]?.canArtistUpload) {
+      showToast('warn', `Cannot upload — ${cur.tag} status is "${VersionState.label(cur.status)}"`);
+      return null;
+    }
+    const num = this.nextNum++;
+    const tag = 'v' + String(num).padStart(3,'0');
+    this.versions.unshift({
+      tag, num,
+      time: 'Just now',
+      status: 'working',
+      notes: 0,
+      by: 'Alex Johnson',
+      size: sizeStr || '—',
+      filename: filename || `SH_0100_comp_${tag}.exr`,
+      task: taskId || (typeof TaskFlow !== 'undefined' ? TaskFlow.current : 'SH_0100')
+    });
+    this.activeVersion = tag;
+    this.persist();
+    return tag;
+  },
+
+  persist() {
+    Store.set('frameshift.versions', this.versions);
+    Store.set('frameshift.activeVersion', this.activeVersion);
+  }
+};
+window.VersionStore = VersionStore;
+
+/* ─────────────────────────────────────────────────────────
+   BADGE HELPERS
+───────────────────────────────────────────────────────── */
+const STATUS_META = {
+  working:  { cls:'badge-working',  label:'Working'  },
+  revise:   { cls:'badge-revise',   label:'Revise'   },
+  approved: { cls:'badge-approved', label:'Approved' },
+};
+function badgeHtml(status, small) {
+  const m = STATUS_META[status] || STATUS_META.working;
+  const s = small ? ' style="font-size:9px;padding:2px 7px;"' : '';
+  return `<span class="badge ${m.cls}"${s}>${m.label}</span>`;
+}
+
+/* ─────────────────────────────────────────────────────────
+   RENDER — pure DOM updates, no side-effects
+───────────────────────────────────────────────────────── */
+const Render = {
+
+  currentTaskUI() {
+    if (typeof TaskFlow === 'undefined') return;
+    const task = TaskFlow.current;
+    const info = TaskFlow.details?.[task] || {};
+    const version = VersionStore.getActive()?.tag || 'v001';
+    const shotLabel = `${task}_comp_${version}`;
+    const dept = info.department || 'FX';
+    const taskType = info.taskType || 'FX Simulation';
+
+    document.querySelectorAll('.current-task-card .task-name').forEach(el => { el.textContent = shotLabel; });
+    document.querySelectorAll('.center-shot-id').forEach(el => { el.textContent = `${task}_comp`; });
+    document.querySelectorAll('.center-shot-dept').forEach(el => { el.textContent = `${dept} · ${taskType}`; });
+    const banner = document.getElementById('active-task-banner');
+    if (banner) banner.textContent = `Working on ${task} · ${taskType}`;
+    const mode = document.getElementById('player-mode');
+    if (mode && typeof Player !== 'undefined') mode.textContent = Player.mode === 'review' ? 'Review Mode' : 'Work Mode';
+    const dashShot = document.querySelector('.dash-focus-main h2');
+    if (dashShot) dashShot.textContent = task;
+    const dashDesc = document.querySelector('.dash-focus-main p');
+    if (dashDesc) dashDesc.textContent = info.description || 'Fire Temple – Wide';
+    const dashMeta = document.querySelectorAll('.dash-focus-meta span');
+    if (dashMeta[0]) dashMeta[0].textContent = `Task: ${taskType}`;
+    if (dashMeta[1]) dashMeta[1].textContent = `Department: ${dept}`;
+    const deadline = document.querySelector('.dash-focus-deadline strong');
+    if (deadline) deadline.textContent = info.deadline || 'May 24, 2024';
+    const remaining = document.querySelector('.dash-focus-deadline em');
+    if (remaining) remaining.textContent = info.remaining || '2 days remaining';
+    const status = document.querySelector('.dash-focus-progress strong');
+    if (status) status.textContent = info.statusLabel || 'In Progress';
+    const progressFill = document.querySelector('.dash-focus-progress .dash-progress-track div');
+    if (progressFill) progressFill.style.width = `${info.progress ?? 60}%`;
+    const progressText = document.querySelector('.dash-focus-progress small');
+    if (progressText) progressText.textContent = `${info.progress ?? 60}%`;
+    document.querySelectorAll('[data-shot]').forEach(el => {
+      const rowInfo = TaskFlow.details?.[el.dataset.shot] || {};
+      const name = el.querySelector('.task-row-name, .task-name');
+      const meta = el.querySelector('.task-row-meta, .task-dept');
+      if (name) name.textContent = `${el.dataset.shot}_comp${rowInfo.version ? '_' + rowInfo.version : ''}`;
+      if (meta) meta.textContent = `${rowInfo.department || 'FX'} · ${rowInfo.taskType || 'FX Simulation'}`;
+    });
+    document.querySelectorAll('[data-shot]').forEach(el => {
+      el.classList.toggle('locked', !TaskFlow.canOpen(el.dataset.shot));
+      el.classList.toggle('active-task', TaskFlow.canOpen(el.dataset.shot));
+    });
+  },
+
+  /* Current Version Card (center-right top) */
+  currentVersionCard() {
+    const v = VersionStore.getActive();
+    if (!v) return;
+    const tagEl    = document.getElementById('cv-tag');
+    const badgeEl  = document.getElementById('cv-badge');
+    const updEl    = document.getElementById('cv-updated');
+    if (tagEl)   tagEl.textContent   = v.tag;
+    if (updEl)   updEl.textContent   = 'Updated ' + v.time;
+    if (badgeEl) {
+      const m = STATUS_META[v.status] || STATUS_META.working;
+      badgeEl.className   = 'badge ' + m.cls;
+      badgeEl.textContent = m.label;
+    }
+    // also update info panel tag
+    const infoTag = document.getElementById('info-cv-tag');
+    if (infoTag) infoTag.textContent = v.tag;
+  },
+
+  /* Version History list (center-right, compact) */
+  versionRows() {
+    const listEl = document.getElementById('vh-list');
+    if (!listEl) return;
+
+    const showAll = listEl.dataset.showAll === 'true';
+    const versions = VersionStore.forCurrentTask();
+    const displayed = showAll
+      ? versions
+      : versions.slice(0, 4);
+
+    if (versions.length === 0) {
+      listEl.innerHTML = '<div class="empty-state">No versions yet — upload your first version</div>';
+    } else {
+    listEl.innerHTML = displayed.map(v => {
+      const isActive = v.tag === VersionStore.activeVersion;
+      const notesHtml = v.notes > 0
+        ? `<span class="vh-note-ct" title="${v.notes} supervisor note${v.notes>1?'s':''}">${v.notes}</span>`
+        : '';
+
+      const detailHtml = isActive ? `
+        <div class="vh-detail">
+          <div class="vh-detail-row"><span class="vh-dkey">Uploaded by</span><span class="vh-dval">${v.by}</span></div>
+          <div class="vh-detail-row"><span class="vh-dkey">File size</span><span class="vh-dval">${v.size}</span></div>
+          <div class="vh-detail-row"><span class="vh-dkey">Filename</span><span class="vh-dval" style="font-size:10px;font-family:monospace;">${v.filename}</span></div>
+          ${v.notes > 0 ? `<div class="vh-detail-row"><span class="vh-dkey">Notes</span><span class="vh-dval" style="color:var(--purple-txt);">${v.notes} note${v.notes>1?'s':''}</span></div>` : ''}
+        </div>` : '';
+
+      return `<div class="vh-row${isActive?' vr-active':''}" data-v="${v.tag}" onclick="selectVersion('${v.tag}')">
+        <span class="vh-tag">${v.tag}</span>
+        <span class="vh-time">${v.time}</span>
+        ${notesHtml}
+        ${badgeHtml(v.status, true)}
+
+        ${detailHtml}
+      </div>`;
+    }).join('');
+    }
+
+    // Show-all button text
+    const btn = document.getElementById('show-all-btn');
+    if (btn) {
+      const remaining = VersionStore.count() - 4;
+      btn.textContent = showAll
+        ? 'Show less'
+        : `Show all versions (${VersionStore.count()})`;
+      btn.style.display = VersionStore.count() <= 4 ? 'none' : 'block';
+    }
+
+    // Tab count badge
+    const tc = document.getElementById('tc-versions');
+    if (tc) tc.textContent = VersionStore.count();
+    const tic = document.getElementById('info-total-v');
+    if (tic) tic.textContent = VersionStore.count();
+  },
+
+  /* Versions full-list table (center-left VERSIONS tab) */
+  versionsTable() {
+    const body = document.getElementById('versions-full-list-body');
+    if (!body) return;
+
+    const versions = VersionStore.forCurrentTask();
+    if (versions.length === 0) {
+      body.innerHTML = '<div class="empty-state">No versions yet — upload your first version</div>';
+      return;
+    }
+    body.innerHTML = versions.map(v => {
+      const isActive = v.tag === VersionStore.activeVersion;
+      return `<div class="vfl-row${isActive?' vfl-active':''}" onclick="selectVersion('${v.tag}')">
+        <div class="vfl-ver">
+          <div class="vfl-mini-thumb"></div>
+          ${v.tag}
+        </div>
+        <div class="vfl-meta">
+          <div class="vfl-filename">${v.filename}</div>
+          <div class="vfl-by">${v.by}</div>
+        </div>
+        ${badgeHtml(v.status, true)}
+        <div class="vfl-date">${v.time}</div>
+        <div class="vfl-notes-ct${v.notes>0?' has-notes':''}">
+          ${v.notes > 0 ? v.notes : '—'}
+        </div>
+
+      </div>`;
+    }).join('');
+  },
+
+  /* Submit panel dropdown */
+  submitDropdown() {
+    const sel = document.getElementById('submit-version-select');
+    if (!sel) return;
+    const labels = { working:'Working', revise:'Revise', approved:'Approved' };
+    const versions = VersionStore.forCurrentTask();
+    if (versions.length === 0) {
+      sel.innerHTML = '<option value="">No versions yet</option>';
+      return;
+    }
+    sel.innerHTML = versions.map((v,i) =>
+      `<option value="${v.tag}"${i===0?' selected':''}>${v.tag} (${labels[v.status]||'Working'})</option>`
+    ).join('');
+  },
+
+  /* Run all render passes */
+  all() {
+    this.currentTaskUI();
+    this.currentVersionCard();
+    this.versionRows();
+    this.versionsTable();
+    this.submitDropdown();
+  }
+};
+
+/* ─────────────────────────────────────────────────────────
+   ACTIONS
+───────────────────────────────────────────────────────── */
+function selectVersion(tag) {
+  if (tag === VersionStore.activeVersion) return;
+  VersionStore.select(tag);
+  showToast('info', `Viewing ${tag} — ${STATUS_META[VersionStore.get(tag)?.status]?.label || ''}`);
+}
+
+function downloadVersion(tag) {
+  const v = VersionStore.get(tag);
+  if (!v) return;
+  showToast('success', `Downloading ${tag} — ${v.filename} (${v.size})`);
+}
+
+/* ─────────────────────────────────────────────────────────
+   TAB SYSTEM
+───────────────────────────────────────────────────────── */
+const TabSystem = {
+  active: 'dashboard',
+
+  switch(tabName) {
+    this.active = tabName;
+    document.body.classList.toggle('dashboard-landing', tabName === 'dashboard');
+    if (tabName === 'dashboard') {
+      document.body.classList.remove('focus-mode');
+      WorkState?.set?.('idle');
+    }
+
+    // Update tab underlines
+    document.querySelectorAll('.tab[data-tab]').forEach(t => {
+      t.classList.toggle('active', t.dataset.tab === tabName);
+    });
+
+    // Show/hide panels
+    document.querySelectorAll('.tab-panel[data-panel]').forEach(p => {
+      p.classList.toggle('active', p.dataset.panel === tabName);
+    });
+
+    // Lazy render the versions table when switching to it
+    if (tabName === 'versions') Render.versionsTable();
+  }
+};
+
+// Expose globally (called from HTML onclick & JS)
+function switchTab(name) {
+  TabSystem.switch(name);
+  updateSidebarActive(name);
+}
+
+const WorkState = {
+  mode: 'idle',
+
+  set(mode) {
+    this.mode = mode;
+    document.body.dataset.mode = mode;
+  }
+};
+window.WorkState = WorkState;
+
+const TaskFlow = {
+  current: Store.get('frameshift.currentTask', 'SH_0100'),
+  queue: ['SH_0100', 'SH_0101', 'SH_0102', 'SH_0103'],
+  dependencies: {
+    SH_0101: ['SH_0100'],
+    SH_0102: ['SH_0100'],
+    SH_0103: ['SH_0102'],
+  },
+  completed: Store.get('frameshift.completedTasks', []),
+  lockedVersions: Store.get('frameshift.lockedVersions', []),
+  details: {
+    SH_0100: { description:'Fire Temple – Wide', taskType:'FX Simulation', department:'FX', version:'v012', deadline:'May 24, 2024', remaining:'2 days remaining', progress:60, statusLabel:'In Progress', priority:1 },
+    SH_0101: { description:'Fire Close Up', taskType:'Glow Variation', department:'FX', version:'v005', deadline:'May 25, 2024', remaining:'3 days remaining', progress:20, statusLabel:'Assigned', priority:2 },
+    SH_0102: { description:'Smoke Simulation', taskType:'FX Simulation', department:'FX', version:'v003', deadline:'May 24, 2024', remaining:'Due today', progress:10, statusLabel:'Assigned', priority:3 },
+    SH_0103: { description:'Ember Detail Pass', taskType:'FX Simulation', department:'FX', version:'v002', deadline:'May 24, 2024', remaining:'Due today', progress:10, statusLabel:'Assigned', priority:4 },
+    SH_0104: { description:'BG Comp', taskType:'FX Simulation', department:'FX', version:'v001', deadline:'May 27, 2024', remaining:'4 days remaining', progress:0, statusLabel:'Assigned', priority:5 },
+  },
+
+  canOpen(shot) {
+    return shot === this.current && this.dependenciesMet(shot);
+  },
+
+  dependenciesMet(shot) {
+    const deps = this.dependencies[shot] || [];
+    return deps.every(dep => this.completed.includes(dep) || dep === this.current);
+  },
+
+  activate(shot) {
+    this.current = shot;
+    Store.set('frameshift.currentTask', this.current);
+    if (typeof Render !== 'undefined') Render.all();
+    if (typeof Dashboard !== 'undefined') Dashboard.init();
+  },
+
+  complete(shot = this.current) {
+    if (!this.completed.includes(shot)) this.completed.push(shot);
+    Store.set('frameshift.completedTasks', this.completed);
+  },
+
+  lock(versionId) {
+    if (!this.lockedVersions.includes(versionId)) this.lockedVersions.push(versionId);
+    Store.set('frameshift.lockedVersions', this.lockedVersions);
+  },
+
+  next() {
+    return this.queue
+      .filter(shot => shot !== this.current)
+      .sort((a,b) => (this.details[a]?.priority || 99) - (this.details[b]?.priority || 99))
+      .find(shot => this.dependenciesMet(shot)) || this.current;
+  }
+};
+window.TaskFlow = TaskFlow;
+
+function openTask(shot) {
+  if (!TaskFlow.canOpen(shot)) {
+    showToast('warn', 'This task is not active yet');
+    return;
+  }
+  Dashboard.openTask(shot);
+}
+window.openTask = openTask;
+
+const FlowManager = {
+  submitCurrentTask() {
+    WorkState.set('submitting');
+    SubmitFlow.submit();
+  },
+
+  completeTask() {
+    showToast('success', 'Task submitted');
+    TaskFlow.complete();
+    const nextTask = TaskFlow.next();
+    if (nextTask !== TaskFlow.current) {
+      TaskFlow.activate(nextTask);
+      Dashboard.openTask(nextTask);
+      showToast('info', 'Next task loaded');
+    }
+  }
+};
+window.FlowManager = FlowManager;
+
+const Dashboard = {
+  init() {
+    const notes = typeof AnnotationStore !== 'undefined'
+      ? AnnotationStore.getNotes(VersionStore?.activeVersion || 'v012')
+      : [];
+    const newNotes = notes.filter(note => note.role === 'supervisor' && note.frame != null).length || 2;
+    const el = document.getElementById('dash-new-notes');
+    if (el) el.textContent = String(newNotes);
+  },
+
+  openWorkspace(message = 'Opened current shot workspace') {
+    switchTab('overview');
+    document.body.classList.add('focus-mode');
+    showToast('info', message);
+  },
+
+  continueWorking() {
+    WorkState.set('working');
+    Player.mode = 'work';
+    this.openWorkspace(`Continuing ${TaskFlow.current}`);
+  },
+
+  openShot() {
+    WorkState.set('working');
+    Player.mode = 'work';
+    this.openWorkspace(`Opened ${TaskFlow.current}`);
+  },
+
+  openTasks(group) {
+    switchTab('overview');
+    showToast('info', `Showing ${group === 'today' ? 'due today' : group === 'review' ? 'needs review' : 'assigned'} tasks`);
+  },
+
+  openTask(shot) {
+    if (!TaskFlow.canOpen(shot)) {
+      showToast('warn', 'This task is not active yet');
+      return;
+    }
+    WorkState.set('working');
+    Player.mode = 'work';
+    switchTab('overview');
+    document.body.classList.add('focus-mode');
+    showToast('info', `Opened ${shot}`);
+  },
+
+  openFeedback(frame) {
+    WorkState.set('reviewing');
+    Player.mode = 'review';
+    switchTab('overview');
+    document.body.classList.add('focus-mode');
+    if (typeof AnnotationSystem !== 'undefined') AnnotationSystem.seekToFrame(frame);
+    showToast('info', 'Review note loaded — update your work');
+  },
+
+  uploadVersion() {
+    WorkState.set('working');
+    switchTab('versions');
+    document.body.classList.add('focus-mode');
+    document.getElementById('version-file-input')?.click();
+  },
+
+  startReview() {
+    WorkState.set('reviewing');
+    Player.mode = 'review';
+    switchTab('overview');
+    document.body.classList.add('focus-mode');
+    if (typeof ReviewMode !== 'undefined') ReviewMode.enter();
+  },
+
+  createNote() {
+    WorkState.set('working');
+    switchTab('notes');
+    document.body.classList.add('focus-mode');
+    document.getElementById('cn-ta')?.focus();
+  }
+};
+window.Dashboard = Dashboard;
+window.DashboardActions = Dashboard;
+
+
+const ReviewSession = {
+  shot: null,
+  version: null,
+
+  start(shot, version) {
+    this.shot = shot;
+    this.version = version;
+    Player.seek(0);
+    Player.pause(Player._playButton());
+    renderNotes();
+    renderViewer();
+  },
+
+  loadNotes(version = this.version) {
+    const notes = AnnotationStore.forVersion(version);
+    renderNotes();
+    return notes;
+  }
+};
+window.ReviewSession = ReviewSession;
+
+function renderFrame(frame) {
+  Player.frame = Math.max(0, Math.min(frame, Player.duration));
+  Player._setProgressForFrame(Player.frame);
+  Player._setTimecode(Player.frame);
+  Player._syncReviewFrame(Player.frame);
+  renderTimelineMarkers();
+}
+window.renderFrame = renderFrame;
+
+function createNote(text) {
+  const noteText = text || 'Note';
+  AnnotationStore.add({
+    frame: Math.round(Player.frame),
+    version: VersionStore.activeVersion,
+    text: noteText,
+    author: User.current.name,
+    type: 'circle'
+  });
+  renderNotes();
+  renderTimelineMarkers();
+}
+window.createNote = createNote;
+
+function renderNotes() {
+  return;
+}
+window.renderNotes = renderNotes;
+
+function renderViewer() {
+  AnnotationSystem._build?.(VersionStore.activeVersion);
+  renderTimelineMarkers();
+}
+window.renderViewer = renderViewer;
+
+function getMarkers(version) {
+  return AnnotationStore.notes
+    .filter(n => n.version === version)
+    .map(n => n.frame);
+}
+window.getMarkers = getMarkers;
+
+function renderTimelineMarkers() {
+  const frames = getMarkers(VersionStore.activeVersion);
+  const strip = document.querySelector('.sup-frame-strip');
+  if (!strip) return;
+  strip.querySelectorAll('.sup-marker').forEach(marker => marker.remove());
+  frames.forEach(frame => {
+    const marker = document.createElement('button');
+    marker.className = 'sup-marker';
+    marker.style.left = `${Math.max(0, Math.min(100, (frame / Player.duration) * 100))}%`;
+    marker.title = `Frame ${frame}`;
+    marker.onclick = () => Player.seek(frame);
+    strip.appendChild(marker);
+  });
+}
+
+/* ─────────────────────────────────────────────────────────
+   UPLOAD ZONE
+───────────────────────────────────────────────────────── */
+const UploadZone = {
+  zone:       null,
+  fillEl:     null,
+  timer:      null,
+  progress:   0,
+
+  init() {
+    this.zone   = document.getElementById('upload-zone');
+    this.fillEl = document.getElementById('upload-progress-fill');
+    if (!this.zone) return;
+
+    // Click to browse
+    this.zone.addEventListener('click', () => {
+      if (this.zone.classList.contains('dz-uploading')) return;
+      document.getElementById('version-file-input').click();
+    });
+
+    // File-input change
+    const fileInput = document.getElementById('version-file-input');
+    if (fileInput) {
+      fileInput.addEventListener('change', e => {
+        const f = e.target.files[0];
+        if (f) this.start(f);
+        e.target.value = ''; // allow same file again
+      });
+    }
+
+    // Drag events on the zone itself
+    this.zone.addEventListener('dragenter', e => {
+      e.preventDefault(); e.stopPropagation();
+      this.zone.classList.add('dz-over');
+    });
+    this.zone.addEventListener('dragover', e => {
+      e.preventDefault(); e.stopPropagation();
+    });
+    this.zone.addEventListener('dragleave', e => {
+      e.stopPropagation();
+      if (!this.zone.contains(e.relatedTarget)) {
+        this.zone.classList.remove('dz-over');
+      }
+    });
+    this.zone.addEventListener('drop', e => {
+      e.preventDefault(); e.stopPropagation();
+      this.zone.classList.remove('dz-over');
+      if (this.zone.classList.contains('dz-uploading')) return;
+      const f = e.dataTransfer?.files[0];
+      if (f) this.start(f);
+    });
+
+    // Prevent page-level drag drop hijack
+    ['dragover','drop'].forEach(evt => {
+      document.addEventListener(evt, e => { if (e.target !== this.zone) e.preventDefault(); });
+    });
+  },
+
+  start(file) {
+    const allowed = /\.(exr|dpx|mov|mp4|png|tiff|tif|jpg|jpeg)$/i;
+    if (!allowed.test(file.name)) {
+      this.fail('Invalid file type');
+      return;
+    }
+    const sizeStr = file.size > 1073741824
+      ? (file.size / 1073741824).toFixed(1) + ' GB'
+      : file.size > 1048576
+        ? (file.size / 1048576).toFixed(0) + ' MB'
+        : (file.size / 1024).toFixed(0) + ' KB';
+
+    // Switch to uploading state
+    this.zone.classList.add('dz-uploading');
+    this.zone.classList.remove('dz-done');
+    this._show('dz-uploading');
+
+    const fnEl   = document.getElementById('dz-fname');
+    const pctEl  = document.getElementById('dz-pct-label');
+    if (fnEl)  fnEl.textContent  = file.name;
+    if (pctEl) pctEl.textContent = '0%';
+
+    // Animate progress
+    this.progress = 0;
+    if (this.fillEl) this.fillEl.style.width = '0%';
+    clearInterval(this.timer);
+
+    this.timer = setInterval(() => {
+      const remaining = 100 - this.progress;
+      const step = Math.max(0.6, remaining * 0.07 + Math.random() * 1.8);
+      this.progress = Math.min(this.progress + step, 99);
+
+      if (this.fillEl) this.fillEl.style.width = this.progress + '%';
+      if (pctEl) pctEl.textContent = Math.round(this.progress) + '%';
+
+      if (this.progress >= 99) {
+        clearInterval(this.timer);
+        setTimeout(() => this.complete(file, sizeStr), 280);
+      }
+    }, 55);
+  },
+
+  complete(file, sizeStr) {
+    // Snap to 100%
+    if (this.fillEl) this.fillEl.style.width = '100%';
+    const pctEl = document.getElementById('dz-pct-label');
+    if (pctEl) pctEl.textContent = '100%';
+
+    setTimeout(() => {
+      // Add to store & re-render
+      const newTag = VersionStore.addVersion(file.name, sizeStr, TaskFlow.current);
+
+      // Switch to done state
+      this.zone.classList.remove('dz-uploading');
+      this.zone.classList.add('dz-done');
+      this._show('dz-done');
+
+      const doneTag  = document.getElementById('dz-done-tag');
+      const doneName = document.getElementById('dz-done-name');
+      if (doneTag)  doneTag.textContent  = newTag + ' created successfully';
+      if (doneName) doneName.textContent  = file.name;
+
+      // Render all version UI
+      Render.all();
+
+      // Flash new row
+      requestAnimationFrame(() => {
+        const newRow = document.querySelector(`[data-v="${newTag}"]`);
+        if (newRow) {
+          newRow.classList.add('vr-new');
+          setTimeout(() => newRow.classList.remove('vr-new'), 5000);
+        }
+      });
+
+      showToast('success', `${newTag} uploaded — ${file.name}`);
+
+      // Reset zone after 3.5s
+      setTimeout(() => this.reset(), 3500);
+    }, 220);
+  },
+
+  fail(message = 'Upload failed') {
+    showToast('error', message);
+    this.reset();
+  },
+
+  reset() {
+    this.zone.classList.remove('dz-uploading','dz-done','dz-over');
+    this._show('dz-idle');
+    if (this.fillEl) this.fillEl.style.width = '0%';
+  },
+
+  _show(stateId) {
+    ['dz-idle','dz-uploading','dz-done'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.style.display = (id === stateId) ? '' : 'none';
+    });
+  }
+};
+
+/* ─────────────────────────────────────────────────────────
+   VERSION TOGGLE (show all / collapse)
+───────────────────────────────────────────────────────── */
+function toggleShowAll() {
+  const list = document.getElementById('vh-list');
+  if (!list) return;
+  list.dataset.showAll = list.dataset.showAll === 'true' ? 'false' : 'true';
+  Render.versionRows();
+}
+
+/* ─────────────────────────────────────────────────────────
+   TOAST — lightweight notification
+───────────────────────────────────────────────────────── */
+function showToast(type, message) {
+  const wrap = document.getElementById('center-toast-wrap');
+  if (!wrap) return;
+
+  const colors  = { success:'var(--green)', info:'var(--purple-txt)', error:'var(--red)', warn:'var(--amber)' };
+  const icons   = { success:'✓', info:'ℹ', error:'✕', warn:'⚠' };
+
+  const t = document.createElement('div');
+  t.className = 'center-toast';
+  t.innerHTML = `
+    <div class="ct-icon" style="background:${colors[type]}25;color:${colors[type]};">${icons[type]}</div>
+    <span>${message}</span>`;
+  wrap.appendChild(t);
+
+  requestAnimationFrame(() => requestAnimationFrame(() => t.classList.add('ct-show')));
+
+  setTimeout(() => {
+    t.classList.remove('ct-show');
+    setTimeout(() => t.remove(), 260);
+  }, 3000);
+}
+
+/* ─────────────────────────────────────────────────────────
+   VIEWER — basic scrub on progress bar
+───────────────────────────────────────────────────────── */
+const Player = {
+  playing: false,
+  mode: 'review',
+  looping: true,
+  frame: 0,
+  fps: 24,
+  duration: 320,
+  progress: 0,
+  timer: null,
+  lastTime: null,
+  totalFrames: 320, // matches the review timeline and annotation frame data
+  _snapLockFrame: null,
+  _pauseLockFrame: null,
+  _hitLockFrame: null,
+  _reviewHoldTimer: null,
+
+  currentFrame() {
+    return this.frame;
+  },
+
+  _setTimecode(frameNum) {
+    const tc = document.getElementById('main-timecode');
+    if (!tc) return;
+    const wholeFrame = Math.max(0, Math.min(this.totalFrames, Math.floor(frameNum)));
+    const secs   = Math.floor(wholeFrame / this.fps);
+    const frames = wholeFrame % this.fps;
+    const mm     = String(Math.floor(secs / 60)).padStart(2,'0');
+    const ss     = String(secs % 60).padStart(2,'0');
+    const ff     = String(frames).padStart(2,'0');
+    tc.textContent = `${mm}:${ss}:${ff}`;
+  },
+
+  _syncReviewFrame(frameNum) {
+    if (typeof Timeline !== 'undefined') Timeline.update(frameNum);
+    if (typeof AnnotationSystem !== 'undefined') AnnotationSystem.onFrameChange(frameNum);
+    if (typeof Render !== 'undefined') Render.currentTaskUI();
+  },
+
+  _setProgressForFrame(frameNum) {
+    this.frame = Math.max(0, Math.min(this.duration, frameNum));
+    this.progress = Math.max(0, Math.min(100, (this.frame / this.duration) * 100));
+    const fill = document.getElementById('main-progress-fill');
+        if (fill) fill.style.width = this.progress + '%';
+  },
+
+  _playButton() {
+    return document.getElementById('main-play-btn');
+  },
+
+  _snapFrame(frameNum) {
+    if (this.mode !== 'review') return frameNum;
+    const version = typeof VersionStore !== 'undefined' ? VersionStore.activeVersion : 'v012';
+    const frames = typeof AnnotationStore !== 'undefined' ? AnnotationStore.allFrames(version) : [];
+    const nearest = frames.reduce((best, frame) => {
+      if (best == null) return frame;
+      return Math.abs(frame - frameNum) < Math.abs(best - frameNum) ? frame : best;
+    }, null);
+
+    if (nearest == null) return frameNum;
+    const distance = Math.abs(nearest - frameNum);
+    if (distance > 2) {
+      if (this._snapLockFrame === nearest) this._snapLockFrame = null;
+      return frameNum;
+    }
+    if (this._snapLockFrame === nearest) return frameNum;
+    this._snapLockFrame = nearest;
+    return nearest;
+  },
+
+  _isReviewFrame(frameNum) {
+    const version = typeof VersionStore !== 'undefined' ? VersionStore.activeVersion : 'v012';
+    if (typeof AnnotationStore === 'undefined') return false;
+    return AnnotationStore.allFrames(version).includes(frameNum);
+  },
+
+  play(btn) {
+    if (this.playing) return;
+    clearTimeout(this._reviewHoldTimer);
+    this.playing = true;
+    this.lastTime = performance.now();
+    const playBtn = btn || this._playButton();
+    if (playBtn) {
+      playBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>';
+      setActive(playBtn, true);
+    }
+    this.timer = requestAnimationFrame(this._tick.bind(this));
+  },
+
+  loop() {
+    if (!this.playing) return;
+    this.frame = Math.min(this.frame + 1, this.duration);
+    renderFrame(this.frame);
+    this.timer = requestAnimationFrame(() => this.loop());
+  },
+
+  pause(btn, preserveHold = false) {
+    if (!preserveHold) clearTimeout(this._reviewHoldTimer);
+    if (!this.playing) return;
+    this.playing = false;
+    if (this.timer) cancelAnimationFrame(this.timer);
+    this.timer = null;
+    const playBtn = btn || this._playButton();
+    if (playBtn) {
+      playBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>';
+      setActive(playBtn, false);
+    }
+  },
+
+  _tick(now) {
+    if (!this.playing) return;
+
+    const delta = now - (this.lastTime || now);
+    const frameAdvance = (delta / 1000) * this.fps;
+    let frame = this.currentFrame() + frameAdvance;
+
+    if (frame >= this.duration) {
+      if (this.looping) {
+        frame = 0;
+        this._hitLockFrame = null;
+    } else {
+        frame = this.duration;
+        this._setProgressForFrame(frame);
+        this._setTimecode(frame);
+        this._syncReviewFrame(frame);
+        this.pause(this._playButton());
+        return;
+      }
+    }
+
+    const note = this.mode === 'review' && typeof AnnotationSystem !== 'undefined'
+      ? AnnotationSystem.getNoteNear(frame)
+      : null;
+    if (note) {
+      const dist = Math.abs(note.frame - frame);
+      if (dist < 8 && dist >= 2) {
+        frame -= Math.sign(frame - note.frame) * dist * 0.2;
+      }
+    }
+    if (note && Math.abs(note.frame - frame) < 2 && this._hitLockFrame !== note.frame) {
+      frame = note.frame;
+      this._hitLockFrame = note.frame;
+      this._setProgressForFrame(frame);
+      this._setTimecode(frame);
+      this._syncReviewFrame(frame);
+      this.pause(this._playButton(), true);
+      clearTimeout(this._reviewHoldTimer);
+      this._reviewHoldTimer = setTimeout(() => {
+        if (this._hitLockFrame === note.frame) this.play(this._playButton());
+      }, 900);
+      return;
+    }
+
+    if (!note && this._hitLockFrame != null && Math.abs(frame - this._hitLockFrame) > 3) {
+      this._hitLockFrame = null;
+    }
+
+    frame = this._snapFrame(frame);
+    this._setProgressForFrame(frame);
+    this._setTimecode(frame);
+    this._syncReviewFrame(frame);
+    this.lastTime = now;
+
+    this.timer = requestAnimationFrame(this._tick.bind(this));
+  },
+
+  togglePlay(btn) {
+    this.playing ? this.pause(btn) : this.play(btn);
+  },
+
+  toggle() {
+    this.togglePlay(this._playButton());
+  },
+
+  seek(frame) {
+    const nextFrame = Math.max(0, Math.min(frame, this.duration));
+    this._setProgressForFrame(nextFrame);
+    this._setTimecode(nextFrame);
+    this._syncReviewFrame(nextFrame);
+  },
+
+  stepFrame(dir) {
+    this.pause(this._playButton());
+
+    let frame = Math.round(this.currentFrame()) + dir;
+    this.seek(frame);
+  },
+
+  skipToStart() {
+    this.seek(0);
+  },
+
+  skipToEnd() {
+    this.seek(this.duration);
+  },
+
+  scrub(e) {
+    const bar = document.getElementById('main-progress');
+    if (!bar) return;
+    const rect = bar.getBoundingClientRect();
+    this.progress = Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100));
+    const fill = document.getElementById('main-progress-fill');
+    if (fill) fill.style.width = this.progress + '%';
+    const frameNum = this._snapFrame(this.currentFrame());
+    if (frameNum !== this.currentFrame()) this._setProgressForFrame(frameNum);
+    this._setTimecode(frameNum);
+    this._syncReviewFrame(frameNum);
+  }
+};
+
+function togglePlay(btn) { Player.togglePlay(btn); }
+function scrubProgress(e) { Player.scrub(e); }
+function setActive(btn, state) {
+  if (!btn) return;
+  btn.classList.toggle('active', state);
+}
+
+function initArtistApp() {
+  if (typeof SupervisorDashboard !== 'undefined' && typeof SupervisorDashboard._normalizeShotActors === 'function') {
+    SupervisorDashboard._normalizeShotActors();
+    const companyArtists = SupervisorDashboard._companyArtists?.() || [];
+    if (User.current.role === 'artist' && companyArtists.length && !companyArtists.includes(User.current.name)) {
+      User.current.name = companyArtists[0];
+      User.current.department = User.current.department || 'FX';
+      Store.set('frameshift.currentUser', User.current);
+      User.applyRole();
+    }
+  }
+  if (typeof AssignmentBridge !== 'undefined') AssignmentBridge.hydrateArtistTaskFlow();
+  TabSystem.switch('dashboard');
+  updateSidebarActive('dashboard');
+
+  document.querySelectorAll('.tab[data-tab]').forEach(tab => {
+    tab.addEventListener('click', () => TabSystem.switch(tab.dataset.tab));
+  });
+
+  const showAllBtn = document.getElementById('show-all-btn');
+  if (showAllBtn) showAllBtn.addEventListener('click', toggleShowAll);
+
+  document.querySelectorAll('.player-btn').forEach(btn => {
+    const title = btn.getAttribute('title');
+    if (title === 'Previous frame') btn.onclick = () => Player.stepFrame(-1);
+    if (title === 'Next frame') btn.onclick = () => Player.stepFrame(1);
+    if (title === 'Step back') btn.onclick = () => Player.stepFrame(-10);
+    if (title === 'Skip to start') btn.onclick = () => Player.skipToStart();
+    if (title === 'Skip to end') btn.onclick = () => Player.skipToEnd();
+    if (title === 'Loop') {
+      setActive(btn, Player.looping);
+      btn.onclick = () => {
+        Player.looping = !Player.looping;
+        setActive(btn, Player.looping);
+      };
+    }
+  });
+
+  Render.all();
+  UploadZone.init();
+
+  document.querySelectorAll('.shortcut-row').forEach(row => {
+    if (row.textContent.trim().startsWith('Upload Version')) {
+      row.addEventListener('click', () => {
+        const fi = document.getElementById('version-file-input');
+        if (fi) fi.click();
+      });
+    }
+    if (row.textContent.trim().startsWith('Submit for Review')) {
+      row.addEventListener('click', () => {
+        document.querySelector('.submit-btn')?.scrollIntoView({ behavior:'smooth' });
+        document.querySelector('.submit-btn')?.focus();
+      });
+    }
+  });
+
+  CNInput.init();
+  AnnotationSystem.init();
+  switchTab('dashboard');
+  Dashboard.init();
+  Render.all();
+  SubmitFlow.init();
+  ArtistBehavior.init();
+}
+
+function initSupervisorApp() {
+  if (typeof SupervisorDashboard !== 'undefined') {
+    SupervisorDashboard.init();
+  }
+}
+
+function initAppForRole() {
+  if (User.current.role === 'supervisor') {
+    initSupervisorApp();
+    return;
+  }
+  initArtistApp();
+}
+
+/* ─────────────────────────────────────────────────────────
+   INIT
+───────────────────────────────────────────────────────── */
+document.addEventListener('DOMContentLoaded', () => {
+  document.addEventListener('keydown', e => {
+    const tag = e.target?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+    if (e.key === ' ') {
+      e.preventDefault();
+      Player.togglePlay();
+    }
+    if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      Player.stepFrame(1);
+    }
+    if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      Player.stepFrame(-1);
+    }
+    if (e.key === 'j' || e.key === 'J') {
+      e.preventDefault();
+      Player.stepFrame(-10);
+    }
+    if (e.key === 'l' || e.key === 'L') {
+      e.preventDefault();
+      Player.stepFrame(10);
+    }
+  });
+
+  User.applyRole();
+  renderAppByRole();
+  initAppForRole();
+});
+
+/* ══════════════════════════════════════════════════════════════
+   FRAMESHIFT NOTES SYSTEM — Step 3
+   (notes system removed — lives in center tab only)
+══════════════════════════════════════════════════════════════ */
+
+/* ─────────────────────────────────────────────────────────
+   TIME UTILITIES
+───────────────────────────────────────────────────────── */
+function relTime(iso) {
+  const d = +new Date(iso);
+  const s = Math.floor((Date.now() - d) / 1000);
+  if (s <  30)  return 'Just now';
+  if (s <  90)  return '1m ago';
+  if (s < 3600) return Math.floor(s / 60)   + 'm ago';
+  if (s < 86400)return Math.floor(s / 3600)  + 'h ago';
+  if (s < 172800)return 'Yesterday';
+  return Math.floor(s / 86400) + 'd ago';
+}
+function absTime(iso) {
+  const d = new Date(iso);
+  const now = new Date();
+  const H = d.getHours().toString().padStart(2,'0');
+  const M = d.getMinutes().toString().padStart(2,'0');
+  const t = `${H}:${M}`;
+  if (d.toDateString() === now.toDateString()) return `Today at ${t}`;
+  const yest = new Date(now); yest.setDate(now.getDate()-1);
+  if (d.toDateString() === yest.toDateString()) return `Yesterday at ${t}`;
+  return d.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + ` at ${t}`;
+}
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+          .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+
+
+
+
+
+
+
+
+
+/* ═══════════════════════════════════════════════════════════════
+   SUBMIT FLOW
+═══════════════════════════════════════════════════════════════ */
+const SubmitFlow = {
+  _notifyChecked:    true,
+  _countdownTimer:   null,
+  _submitted:        false,
+  _submittedVersion: null,
+
+  init() {
+    const btn = document.getElementById('submit-btn');
+    if (btn && !btn.getAttribute('onclick')) btn.addEventListener('click', () => this.submit());
+    if (typeof Render !== 'undefined') Render.submitDropdown();
+  },
+
+  onVersionChange() {},
+
+  onNoteInput(ta) {
+    const hint = document.getElementById('sf-hint');
+    if (!hint) return;
+    const len = ta.value.trim().length;
+    hint.textContent = len > 500 ? `${len}/500 — keep notes concise` : len > 0 ? `${len} chars` : '';
+    hint.className   = 'sf-hint' + (len > 500 ? ' sf-warn' : '');
+  },
+
+  toggleNotify() {
+    this._notifyChecked = !this._notifyChecked;
+    const chk = document.getElementById('notify-chk');
+    const who = document.getElementById('notify-who');
+    if (!chk) return;
+    if (this._notifyChecked) {
+      chk.style.background = 'var(--purple)';
+      chk.innerHTML = '<svg viewBox="0 0 12 12"><polyline points="1.5 6 4.5 9 10.5 3" stroke="white" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    } else {
+      chk.style.background = 'var(--bg-input)';
+      chk.innerHTML = '';
+    }
+    if (who) who.style.opacity = this._notifyChecked ? '1' : '0.35';
+  },
+
+  submit() {
+    if (this._submitted) return;
+    const btn     = document.getElementById('submit-btn');
+    const version = document.getElementById('submit-version-select')?.value
+                    || (typeof VersionStore !== 'undefined' ? VersionStore.activeVersion : 'v012');
+    const note    = document.getElementById('submit-note')?.value.trim() || '';
+
+    if (btn) {
+      btn.classList.add('sb-loading');
+      btn.innerHTML = '<span class="sb-spinner"></span>Submitting…';
+    }
+    setTimeout(() => {
+      this._submitted        = true;
+      this._submittedVersion = version;
+      this._cascadeStatus(version);
+      this._showConfirmation(version, note);
+      WorkState.set('submitting');
+      setTimeout(() => FlowManager.completeTask(), 1000);
+    }, 720);
+  },
+
+  _cascadeStatus(version) {
+    /* 1. Center badge */
+    const badge = document.getElementById('task-status-badge');
+    if (badge) {
+      badge.className = 'badge badge-review badge-pop';
+      badge.textContent = 'In Review';
+      setTimeout(() => badge.classList.remove('badge-pop'), 400);
+    }
+    /* 2. Left panel badge */
+    const ctBadge = document.querySelector('.current-task-card .badge');
+    if (ctBadge) {
+      ctBadge.className = 'badge badge-review badge-pop';
+      ctBadge.textContent = 'In Review';
+      setTimeout(() => ctBadge.classList.remove('badge-pop'), 400);
+    }
+    /* 3. System event in notes thread */
+    this._addSystemEventNote(version);
+  },
+
+  _addSystemEventNote(version) {
+    const thread = document.getElementById('cn-thread');
+    if (!thread) return;
+    const el = document.createElement('div');
+    el.className = 'note-system-event';
+    el.innerHTML = `
+      <div class="nse-line"></div>
+      <div class="nse-badge">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+          stroke-linecap="round" stroke-linejoin="round" width="10" height="10">
+          <line x1="22" y1="2" x2="11" y2="13"/>
+          <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+        </svg>
+        Submitted for review · ${version} · Just now
+      </div>
+      <div class="nse-line"></div>`;
+    thread.appendChild(el);
+    thread.scrollTop = thread.scrollHeight;
+  },
+
+  _showConfirmation(version, note) {
+    const formWrap = document.getElementById('submit-form-wrap');
+    const confWrap = document.getElementById('submit-confirm-wrap');
+    if (formWrap) formWrap.style.display = 'none';
+    if (confWrap) confWrap.classList.add('sc-visible');
+
+    const now = new Date();
+    const hm  = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    set('sc-ver-pill',      version);
+    set('sc-time-pill',     `Today at ${hm}`);
+    set('sc-shot-line',     'SH_0100_comp_v012');
+    set('sc-sup-row',       'Sarah Chen');
+    set('sc-notified-row',  this._notifyChecked ? 'Yes — email + in-app' : 'No');
+    set('sc-note-row',      note.length > 0 ? (note.length > 34 ? note.slice(0,34)+'…' : note) : 'None');
+    this._startUndoCountdown(8);
+  },
+
+  _startUndoCountdown(seconds) {
+    let remaining = seconds;
+    clearInterval(this._countdownTimer);
+    this._countdownTimer = setInterval(() => {
+      remaining--;
+      const countEl = document.getElementById('sc-undo-count');
+      if (countEl) countEl.textContent = remaining;
+      if (remaining <= 0) {
+        clearInterval(this._countdownTimer);
+        const undoBtn = document.getElementById('sc-undo-btn');
+        if (undoBtn) {
+          undoBtn.classList.add('scu-fading');
+          setTimeout(() => { if (undoBtn) undoBtn.style.display = 'none'; }, 1500);
+        }
+      }
+    }, 1000);
+  },
+
+  undo() {
+    if (!this._submitted) return;
+    clearInterval(this._countdownTimer);
+    this._submitted = false;
+    /* Revert badges */
+    ['task-status-badge'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) { el.className = 'badge badge-ip badge-pop'; el.textContent = 'In Progress'; }
+    });
+    const ctBadge = document.querySelector('.current-task-card .badge');
+    if (ctBadge) { ctBadge.className = 'badge badge-ip badge-pop'; ctBadge.textContent = 'In Progress'; }
+    /* Remove system event note */
+    document.querySelectorAll('.note-system-event').forEach(el => el.remove());
+    this.reset();
+    if (typeof showToast !== 'undefined') showToast('info', 'Submission undone — back to In Progress');
+  },
+
+  reset() {
+    this._submitted = this._submittedVersion = null;
+    clearInterval(this._countdownTimer);
+    const formWrap = document.getElementById('submit-form-wrap');
+    const confWrap = document.getElementById('submit-confirm-wrap');
+    const btn      = document.getElementById('submit-btn');
+    const undoBtn  = document.getElementById('sc-undo-btn');
+    if (formWrap) formWrap.style.display = '';
+    if (confWrap) confWrap.classList.remove('sc-visible');
+    if (btn)      { btn.classList.remove('sb-loading'); btn.textContent = 'Submit for Review'; }
+    if (undoBtn)  { undoBtn.style.display = ''; undoBtn.classList.remove('scu-fading'); }
+    const countEl = document.getElementById('sc-undo-count');
+    if (countEl) countEl.textContent = '8';
+  },
+};
+
+/* ─────────────────────────────────────────────────────────
+   INIT SUBMIT FLOW
+───────────────────────────────────────────────────────── */
+// SubmitFlow is initialized inside initArtistApp().
+
+
+/* ══════════════════════════════════════════════════════════════
+   FRAMESHIFT STATE SYSTEM
+   Enforced transitions — single source of truth for all statuses.
+══════════════════════════════════════════════════════════════ */
+
+/* ─────────────────────────────────────────────────────────
+   TASK STATE MACHINE
+───────────────────────────────────────────────────────── */
+const TaskState = {
+  STATES: {
+    assigned:    { label:'Assigned',    badge:'badge-assigned', next:['in_progress'] },
+    in_progress: { label:'In Progress', badge:'badge-ip',       next:['in_review'] },
+    in_review:   { label:'In Review',   badge:'badge-review',   next:['approved','revise'] },
+    revise:      { label:'Revise',      badge:'badge-revise',   next:['in_progress'] },
+    approved:    { label:'Approved',    badge:'badge-approved', next:[] },
+  },
+
+  /* Artist can only push forward */
+  ARTIST_CAN_SET: ['in_progress', 'in_review'],
+  /* System/supervisor can set anything */
+
+  _current: 'in_progress',
+
+  get current() { return this._current; },
+  get def()     { return this.STATES[this._current]; },
+
+  canArtist(to) {
+    if (!this.ARTIST_CAN_SET.includes(to)) return { ok:false, reason:`"${this.STATES[to]?.label||to}" requires supervisor action` };
+    if (!(this.def?.next||[]).includes(to))  return { ok:false, reason:`Cannot move from "${this.def?.label}" → "${this.STATES[to]?.label}". Valid: ${(this.def?.next||[]).map(s=>this.STATES[s]?.label).join(', ')||'none'}` };
+    return { ok:true };
+  },
+
+  apply(to, actor='artist') {
+    const check = actor === 'artist' ? this.canArtist(to) : { ok:true };
+    if (!check.ok) { showToast('warn', check.reason); return false; }
+    const from = this._current;
+    this._current = to;
+    this._fire(from, to);
+    return true;
+  },
+
+  _cbs: [],
+  on(fn) { this._cbs.push(fn); },
+  _fire(f,t) { this._cbs.forEach(fn=>fn(f,t)); },
+};
+
+/* ─────────────────────────────────────────────────────────
+   VERSION STATE MACHINE
+───────────────────────────────────────────────────────── */
+const VersionState = {
+  STATES: {
+    working:   { label:'Working',   badge:'badge-working',  canArtistUpload:true,  next:['submitted'] },
+    submitted: { label:'Submitted', badge:'badge-review',   canArtistUpload:false, next:['approved','revise'] },
+    approved:  { label:'Approved',  badge:'badge-approved', canArtistUpload:false, next:[] },
+    revise:    { label:'Revise',    badge:'badge-revise',   canArtistUpload:true,  next:['submitted'] },
+  },
+
+  canTransitionTo(from, to) {
+    return (this.STATES[from]?.next || []).includes(to);
+  },
+
+  badge(status)  { return this.STATES[status]?.badge || 'badge-working'; },
+  label(status)  { return this.STATES[status]?.label || status; },
+  canUpload(status) { return this.STATES[status]?.canArtistUpload ?? true; },
+};
+
+/* ─────────────────────────────────────────────────────────
+   WIRE TaskState → ALL STATUS BADGES
+───────────────────────────────────────────────────────── */
+TaskState.on((from, to) => {
+  const def = TaskState.STATES[to];
+  if (!def) return;
+
+  /* 1. Center panel OVERVIEW badge */
+  const cb = document.getElementById('task-status-badge');
+  if (cb) { cb.className=`badge ${def.badge} badge-pop`; cb.textContent=def.label; setTimeout(()=>cb.classList.remove('badge-pop'),350); }
+
+  /* 2. Left panel current-task badge */
+  const lb = document.querySelector('.current-task-card .badge');
+  if (lb) { lb.className=`badge ${def.badge} badge-pop`; lb.textContent=def.label; setTimeout(()=>lb.classList.remove('badge-pop'),350); }
+
+  /* 3. Info panel status cell */
+  document.querySelectorAll('.info-val .badge').forEach(b => {
+    if (b.textContent.includes('Progress')||b.textContent.includes('Review')||b.textContent.includes('Approved')||b.textContent.includes('Revise')) {
+      b.className=`badge ${def.badge}`; b.textContent=def.label;
+    }
+  });
+
+  /* 4. Submit panel — toggle button text based on state */
+  const sb = document.getElementById('submit-btn');
+  if (sb && !sb.classList.contains('sb-loading')) {
+    if (to === 'in_review') { sb.textContent='Already In Review'; sb.disabled=true; }
+    if (to === 'revise')    { sb.disabled=false; sb.textContent='Submit Revised Version'; }
+    if (to === 'in_progress') { sb.disabled=false; sb.textContent='Submit for Review'; }
+  }
+});
+
+/* ─────────────────────────────────────────────────────────
+   PATCH SubmitFlow → use state machine
+───────────────────────────────────────────────────────── */
+document.addEventListener('DOMContentLoaded', () => {
+  if (typeof SubmitFlow === 'undefined') return;
+
+  /* Override _cascadeStatus */
+  SubmitFlow._cascadeStatus = function(version) {
+    const ok = TaskState.apply('in_review', 'artist');
+    if (!ok) return;
+    /* System event note in thread */
+    this._addSystemEventNote(version);
+  };
+
+  /* Override undo */
+  SubmitFlow.undo = function() {
+    TaskState._current = 'in_progress';
+    TaskState._fire('in_review', 'in_progress');
+    document.querySelectorAll('.note-system-event').forEach(el=>el.remove());
+    this.reset();
+    showToast('info', 'Submission undone — back to In Progress');
+  };
+}, { once: true });
+
+
+/* ══════════════════════════════════════════════════════════════
+   ARTIST BEHAVIOR LOCKS — Step final
+   1. Tasks are read-only — artist cannot reorder
+   2. Current task always highlighted
+   3. Latest version always auto-selected
+══════════════════════════════════════════════════════════════ */
+const ArtistBehavior = {
+
+  /* ── Lock 1: Task list is immutable ──────────────────────────
+     Tasks are assigned by supervisor. No drag, no reorder.
+     Any accidental drag event is cancelled at the container level.
+  ─────────────────────────────────────────────────────────── */
+  lockTaskList() {
+    const colLeft = document.querySelector('.col-left');
+    if (!colLeft) return;
+
+    // Block all drag events from propagating out of col-left
+    ['dragstart','dragover','dragenter','dragleave','drop'].forEach(evt => {
+      colLeft.addEventListener(evt, e => {
+        e.preventDefault();
+        e.stopPropagation();
+      }, { capture: true });
+    });
+
+    // Ensure no task card has draggable attribute
+    colLeft.querySelectorAll('[draggable]').forEach(el => {
+      el.removeAttribute('draggable');
+    });
+
+    // Also block right-click context menus on task rows (no "move to top" etc.)
+    colLeft.querySelectorAll('.task-row, .current-task-card, .up-next-card').forEach(el => {
+      el.addEventListener('contextmenu', e => e.preventDefault());
+    });
+  },
+
+  /* ── Lock 2: Current task always highlighted ──────────────────
+     The current-task-card always has a distinct visual treatment.
+     If the state ever changes (version submitted), update the badge
+     but keep the card anchored as the active item.
+  ─────────────────────────────────────────────────────────── */
+  pinCurrentTask() {
+    const card = document.querySelector('.current-task-card');
+    if (!card) return;
+
+    // Ensure it's always visible at the top (scroll col-left to top)
+    const colLeft = document.querySelector('.col-left');
+    if (colLeft) colLeft.scrollTop = 0;
+
+    // Apply a persistent "active" data attribute
+    card.dataset.pinned = 'true';
+    card.setAttribute('aria-current', 'task');
+
+    // When task status changes, reflect it on the card badge
+    if (typeof TaskState !== 'undefined') {
+      TaskState.on((from, to) => {
+        const def = TaskState.STATES[to];
+        if (!def) return;
+        // Ensure card stays visible — scroll to top
+        if (colLeft) {
+          colLeft.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+      });
+    }
+  },
+
+  /* ── Lock 3: Latest version auto-selected ───────────────────
+     On any render, the newest version (index 0) is always active.
+     Submit dropdown always defaults to the latest version.
+     Version table top row is always highlighted.
+  ─────────────────────────────────────────────────────────── */
+  autoSelectLatestVersion() {
+    if (typeof VersionStore === 'undefined') return;
+
+    // Ensure the active version is always the latest
+    const latest = VersionStore.forCurrentTask()[0];
+    if (latest && VersionStore.activeVersion !== latest.tag) {
+      VersionStore.activeVersion = latest.tag;
+    }
+
+    // Patch VersionStore.addVersion to always auto-select new version
+    const origAdd = VersionStore.addVersion.bind(VersionStore);
+    VersionStore.addVersion = function(filename, sizeStr, taskId) {
+      const tag = origAdd(filename, sizeStr, taskId);
+      if (tag) {
+        // New version is always index 0 and auto-selected
+        this.activeVersion = tag;
+        // Sync submit dropdown to new version
+        const sel = document.getElementById('submit-version-select');
+        if (sel) sel.value = tag;
+        // Re-render version UI
+        if (typeof Render !== 'undefined') Render.all();
+      }
+      return tag;
+    };
+
+    // Patch Render.submitDropdown to always select first option
+    if (typeof Render !== 'undefined') {
+      const origDropdown = Render.submitDropdown.bind(Render);
+      Render.submitDropdown = function() {
+        origDropdown();
+        // Always ensure first option selected
+        const sel = document.getElementById('submit-version-select');
+        if (sel && sel.options.length > 0) {
+          sel.selectedIndex = 0;
+        }
+      };
+    }
+  },
+
+  /* ── Init all locks ─────────────────────────────────────── */
+  init() {
+    this.lockTaskList();
+    this.pinCurrentTask();
+    this.autoSelectLatestVersion();
+
+    // Also lock task-row clicks to be view-only (open task detail, not select)
+    document.querySelectorAll('.task-row').forEach(row => {
+      // Preserve existing click but prevent any drag-initiated selection
+      row.style.userSelect = 'none';
+      row.style.webkitUserSelect = 'none';
+    });
+
+    // Add "view only" label to the other-assigned section to reinforce the model
+    const otherHdr = document.querySelector('.other-hdr');
+    if (otherHdr && !otherHdr.querySelector('.lock-label')) {
+      const lbl = document.createElement('span');
+      lbl.className = 'lock-label';
+      lbl.style.cssText = 'font-size:9px;color:var(--t3);font-weight:500;background:var(--bg-card);border:1px solid var(--b);border-radius:3px;padding:1px 6px;';
+      lbl.textContent = 'read only';
+      otherHdr.appendChild(lbl);
+    }
+  }
+};
+
+/* ── Wire sidebar nav to also update visual active state ── */
+function updateSidebarActive(tabName) {
+  const map = { dashboard:'nav-dashboard', overview:'nav-tasks', versions:'nav-versions', notes:'nav-notes' };
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  const target = document.getElementById(map[tabName] || 'nav-dashboard');
+  if (target) target.classList.add('active');
+}
+
+/* switchTab patched inline below */
+
+/* ── Init on DOM ready ────────────────────────────────────── */
+// ArtistBehavior is initialized inside initArtistApp().
+
+
+/* ─────────────────────────────────────────────────────────
+   CNInput — Center Notes input (self-contained)
+   Replaces the removed right-panel notes system.
+───────────────────────────────────────────────────────── */
+const CNInput = {
+  _frameRef: null,
+
+  init() {
+    const ta   = document.getElementById('cn-ta');
+    const foot = document.getElementById('cn-input-footer');
+    if (!ta) return;
+
+    // Auto-grow
+    ta.addEventListener('input', () => {
+      ta.style.height = 'auto';
+      ta.style.height = Math.min(ta.scrollHeight, 84) + 'px';
+      if (foot) foot.classList.toggle('visible', ta.value.length > 0);
+    });
+
+    // Enter = send, Shift+Enter = newline
+    ta.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); this.send(); }
+      if (e.key === 'Escape') this.closeFrameRef();
+    });
+
+    // Frame ref inputs
+    ['cn-fr-start','cn-fr-end'].forEach(id => {
+      document.getElementById(id)?.addEventListener('keydown', e => {
+        if (e.key === 'Enter') this.attachFrame();
+      });
+    });
+  },
+
+  send() {
+    const ta = document.getElementById('cn-ta');
+    if (!ta || !ta.value.trim()) return;
+    const text = ta.value.trim();
+    const frameRef = this._frameRef;
+
+    // Build message node
+    const thread = document.getElementById('cn-thread');
+    if (thread) {
+      const now = new Date();
+      const timeStr = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+      const frameHtml = frameRef
+        ? `<div class="cn-frame-tag" onclick="seekToFrame(${frameRef.start})"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>Frames ${frameRef.start}–${frameRef.end}</div>` : '';
+
+      const el = document.createElement('div');
+      el.className = 'cn-msg cn-art';
+      el.innerHTML = `
+        <div class="cn-av cn-av-art">AJ</div>
+        <div class="cn-body">
+          <div class="cn-hdr">
+            <span class="cn-author">Alex Johnson</span>
+            <span class="cn-role-badge cn-role-art">You</span>
+            <span class="cn-time">${timeStr}</span>
+          </div>
+          <div class="cn-txt">${text.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>
+          ${frameHtml}
+        </div>`;
+      thread.appendChild(el);
+      thread.scrollTop = thread.scrollHeight;
+    }
+
+    // Reset
+    ta.value = '';
+    ta.style.height = 'auto';
+    document.getElementById('cn-input-footer')?.classList.remove('visible');
+    this._frameRef = null;
+    this.closeFrameRef();
+  },
+
+  toggleFrameRef() {
+    const c = document.getElementById('cn-frame-composer');
+    const btn = document.getElementById('cn-frame-btn');
+    if (!c) return;
+    const open = c.classList.toggle('open');
+    if (btn) btn.style.color = open ? 'var(--purple-txt)' : '';
+    if (open) document.getElementById('cn-fr-start')?.focus();
+  },
+
+  closeFrameRef() {
+    const c = document.getElementById('cn-frame-composer');
+    const btn = document.getElementById('cn-frame-btn');
+    if (c) c.classList.remove('open');
+    if (btn) btn.style.color = '';
+    const s = document.getElementById('cn-fr-start');
+    const e = document.getElementById('cn-fr-end');
+    if (s) s.value = '';
+    if (e) e.value = '';
+  },
+
+  attachFrame() {
+    const s = parseInt(document.getElementById('cn-fr-start')?.value || '0');
+    const e = parseInt(document.getElementById('cn-fr-end')?.value || '0');
+    if (!s || !e || e < s) { showToast('warn', 'Enter a valid frame range'); return; }
+    this._frameRef = { start: s, end: e };
+    this.closeFrameRef();
+    const ta = document.getElementById('cn-ta');
+    if (ta) ta.focus();
+    showToast('info', `Frame range ${s}–${e} will attach to next note`);
+  },
+};
+
+/* seekToFrame — used by frame tags in notes thread */
+function seekToFrame(frame) {
+  if (typeof Player !== 'undefined') {
+    Player.progress = Math.min(100, (frame / 320) * 100);
+    const fill = document.getElementById('main-progress-fill');
+    if (fill) fill.style.width = Player.progress + '%';
+    const tc = document.getElementById('main-timecode');
+    if (tc) {
+      const secs = Math.floor(frame / 24);
+      const fr   = frame % 24;
+      const mm = String(Math.floor(secs/60)).padStart(2,'0');
+      const ss = String(secs%60).padStart(2,'0');
+      const ff = String(fr).padStart(2,'0');
+      tc.textContent = `${mm}:${ss}:${ff}`;
+    }
+  }
+  showToast('info', `Seeked to frame ${frame}`);
+}
+
+
+/* ═══════════════════════════════════════════════════════
+   ANNOTATION SYSTEM
+   ─────────────────────────────────────────────────────
+   AnnotationStore  — per-version data (annotations + notes-with-frames)
+   AnnotationCanvas — renders shapes on canvas, frame-aware
+   FrameTimeline    — clickable markers, playhead sync
+   NoteSync         — highlights note when frame matches
+   AnnotationSystem — orchestrates everything, public API
+═══════════════════════════════════════════════════════ */
+
+/* ── DATA STORE ───────────────────────────────────────── */
+const AnnotationStore = {
+  /* Annotations: { frame, shape, x, y, w, h, color, version } */
+  annotations: {
+    v012: [
+      { id:'a1', frame: 84,  shape:'circle',    x:0.48, y:0.55, r:0.09,  color:'#F59E0B', label:'Spill area' },
+      { id:'a2', frame: 84,  shape:'arrow',     x1:0.72, y1:0.32, x2:0.55, y2:0.52, color:'#EF4444', label:'Edge spill source' },
+      { id:'a3', frame: 105, shape:'highlight',  x:0.15, y:0.60, w:0.40, h:0.25,   color:'#3B82F6', label:'BG contrast zone' },
+      { id:'a4', frame: 148, shape:'circle',    x:0.62, y:0.40, r:0.06,  color:'#22C55E', label:'Approved look' },
+    ],
+    v011: [
+      { id:'b1', frame: 84,  shape:'circle',    x:0.48, y:0.52, r:0.12,  color:'#EF4444', label:'Too much spill' },
+      { id:'b2', frame: 90,  shape:'arrow',     x1:0.30, y1:0.70, x2:0.50, y2:0.55, color:'#F59E0B', label:'Check motion blur' },
+    ],
+    v010: [
+      { id:'c1', frame: 84,  shape:'circle',    x:0.50, y:0.50, r:0.15,  color:'#EF4444', label:'Density issue' },
+    ],
+  },
+
+  notes: Store.get('frameshift.annotationNotes', []),
+
+  /* Seed notes with frame references, per version */
+  notesByVersion: {
+    v012: [
+      { id:'n1', frame: 84,  role:'supervisor', author:'Sarah Chen',   initials:'SC',
+        text:'Please clean up the edge light spill on frame 84. The spill reads as a green tint — run a luma matte and apply curves.', time:'2h ago' },
+      { id:'n2', frame: null, role:'artist',     author:'Alex Johnson', initials:'AJ',
+        text:'Got it — running the luma matte now. Will update v013 shortly with the spill fix.', time:'1h ago' },
+      { id:'n3', frame: 105, role:'supervisor', author:'Sarah Chen',   initials:'SC',
+        text:'Also match the contrast in the background buildings around frame 105. Reference SH_0099 for the approved look.', time:'30m ago' },
+    ],
+    v011: [
+      { id:'m1', frame: 84,  role:'supervisor', author:'Sarah Chen',   initials:'SC',
+        text:'Smoke density still too uniform. Needs variation across the Z depth — heavier near frame 84.', time:'Yesterday' },
+      { id:'m2', frame: 90,  role:'supervisor', author:'Sarah Chen',   initials:'SC',
+        text:'Motion blur on particles looks off at frame 90. Should be softer.', time:'Yesterday' },
+    ],
+    v010: [
+      { id:'k1', frame: 84,  role:'supervisor', author:'Sarah Chen',   initials:'SC',
+        text:'Starting point. Density is off around frame 84 — smoke is too thin.', time:'2 days ago' },
+    ],
+  },
+
+  get(version)         { return this.annotations[version] || []; },
+  forVersion(version) {
+    return [
+      ...(this.notesByVersion[version] || []),
+      ...this.notes.filter(n => n.version === version)
+    ];
+  },
+  getNotes(version)    { return this.forVersion(version); },
+  forFrame(version, f) { return this.get(version).filter(a => a.frame === f); },
+  notesForFrame(v, f)  { return this.getNotes(v).filter(n => n.frame === f); },
+  getByFrame(frame, version) {
+    return this.notes.filter(n =>
+      n.frame === frame && n.version === version
+    );
+  },
+  add(annotation) {
+    const version = annotation.version || VersionStore.activeVersion;
+    if (!this.annotations[version]) this.annotations[version] = [];
+    this.annotations[version].push({
+      id: annotation.id || 'sup-ann-' + Date.now(),
+      frame: annotation.frame,
+      shape: annotation.type || annotation.shape || 'circle',
+      x: annotation.x ?? 0.45,
+      y: annotation.y ?? 0.35,
+      r: annotation.r ?? 0.06,
+      w: annotation.w ?? 0.22,
+      h: annotation.h ?? 0.16,
+      x1: annotation.x1 ?? 0.66,
+      y1: annotation.y1 ?? 0.30,
+      x2: annotation.x2 ?? 0.48,
+      y2: annotation.y2 ?? 0.46,
+      color: annotation.color || '#F59E0B',
+      label: annotation.text || 'Supervisor note',
+      author: User.current.name,
+      role: User.current.role
+    });
+    const note = {
+      id:'sup-note-' + Date.now(),
+      version,
+      frame: annotation.frame,
+      role:'supervisor',
+      author:User.current.name,
+      initials:User.current.name.split(' ').map(p=>p[0]).join('').slice(0,2),
+      text:annotation.text || 'Supervisor annotation',
+      time:'Just now',
+      resolved:false
+    };
+    this.notes.push(note);
+    Store.set('frameshift.annotationNotes', this.notes);
+  },
+  allFrames(version)   {
+    const af = new Set(this.get(version).map(a => a.frame));
+    this.getNotes(version).forEach(n => { if (n.frame != null) af.add(n.frame); });
+    return [...af].sort((a,b) => a-b);
+  },
+};
+
+/* ── CANVAS RENDERER ─────────────────────────────────── */
+const AnnotationCanvas = {
+  canvas: null,
+  ctx: null,
+  visible: false,
+
+  init() {
+    this.canvas = document.getElementById('ann-canvas');
+    if (!this.canvas) return;
+    this.ctx = this.canvas.getContext('2d');
+    this._resize();
+    window.addEventListener('resize', () => this._resize());
+  },
+
+  _resize() {
+    if (!this.canvas) return;
+    const scene = document.querySelector('.viewer-scene');
+    if (!scene) return;
+    const r = scene.getBoundingClientRect();
+    this.canvas.width  = r.width  || 640;
+    this.canvas.height = r.height || 320;
+    this.canvas.style.width  = '100%';
+    this.canvas.style.height = '100%';
+  },
+
+  render(version, frame) {
+    if (!this.ctx || !this.canvas) return;
+    const W = this.canvas.width;
+    const H = this.canvas.height;
+    this.ctx.clearRect(0, 0, W, H);
+    if (!this.visible) return;
+
+    const anns = AnnotationStore.forFrame(version, frame);
+    anns.forEach((a, i) => {
+      this._drawShape(a, W, H, i);
+    });
+  },
+
+  _drawShape(a, W, H, idx) {
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.globalAlpha = 0.88;
+    const c = a.color || '#F59E0B';
+
+    /* entrance: offset slightly for stagger effect */
+    ctx.globalAlpha = Math.min(0.88, 0.2 + idx * 0.25 + 0.5);
+
+    if (a.shape === 'circle') {
+      const cx = a.x * W, cy = a.y * H, r = a.r * Math.min(W, H);
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.strokeStyle = c;
+      ctx.lineWidth = 2.5;
+      ctx.setLineDash([]);
+      ctx.stroke();
+      ctx.fillStyle = c + '22';
+      ctx.fill();
+      /* label dot */
+      ctx.beginPath();
+      ctx.arc(cx - r + 6, cy - r + 6, 4, 0, Math.PI * 2);
+      ctx.fillStyle = c;
+      ctx.fill();
+      /* label text */
+      this._drawLabel(ctx, a.label, cx, cy - r - 8, c);
+    }
+
+    if (a.shape === 'arrow') {
+      const x1 = a.x1 * W, y1 = a.y1 * H;
+      const x2 = a.x2 * W, y2 = a.y2 * H;
+      ctx.strokeStyle = c;
+      ctx.lineWidth = 2.5;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+      /* arrowhead */
+      const ang = Math.atan2(y2 - y1, x2 - x1);
+      const hl  = 14;
+      ctx.beginPath();
+      ctx.moveTo(x2, y2);
+      ctx.lineTo(x2 - hl * Math.cos(ang - Math.PI/6), y2 - hl * Math.sin(ang - Math.PI/6));
+      ctx.moveTo(x2, y2);
+      ctx.lineTo(x2 - hl * Math.cos(ang + Math.PI/6), y2 - hl * Math.sin(ang + Math.PI/6));
+      ctx.stroke();
+      /* label at tail */
+      this._drawLabel(ctx, a.label, x1, y1 - 10, c);
+    }
+
+    if (a.shape === 'highlight') {
+      const x = a.x * W, y = a.y * H;
+      const w = a.w * W, h = a.h * H;
+      ctx.strokeStyle = c;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 3]);
+      ctx.strokeRect(x, y, w, h);
+      ctx.fillStyle = c + '14';
+      ctx.fillRect(x, y, w, h);
+      ctx.setLineDash([]);
+      this._drawLabel(ctx, a.label, x + w/2, y - 8, c);
+    }
+
+    ctx.restore();
+  },
+
+  _drawLabel(ctx, text, x, y, color) {
+    if (!text) return;
+    ctx.save();
+    ctx.font = '700 10px "Plus Jakarta Sans", system-ui, sans-serif';
+    const m = ctx.measureText(text);
+    const pad = 5, h = 16;
+    const bx = x - m.width/2 - pad;
+    const by = y - h/2 - 1;
+    ctx.fillStyle = 'rgba(10,10,18,0.82)';
+    ctx.beginPath();
+    ctx.roundRect(bx, by, m.width + pad*2, h, 3);
+    ctx.fill();
+    ctx.fillStyle = color;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, x, y + 1);
+    ctx.restore();
+  },
+
+  setVisible(v) {
+    this.visible = v;
+    if (this.canvas) this.canvas.classList.toggle('ann-hidden', !v);
+  },
+};
+
+/* ── FRAME TIMELINE ──────────────────────────────────── */
+const FrameTimeline = {
+  totalFrames: 320,
+
+  init() {
+    const tl = document.getElementById('frame-timeline');
+    if (!tl) return;
+    const tot = document.getElementById('ftl-total');
+    if (tot) tot.textContent = `${this.totalFrames}fr`;
+
+    /* Click on rail to seek */
+    tl.addEventListener('click', e => {
+      if (e.target.classList.contains('ftl-marker')) return;
+      const r = tl.getBoundingClientRect();
+      const pad = 10;
+      const pct = Math.max(0, Math.min(1, (e.clientX - r.left - pad) / (r.width - pad*2)));
+      const frame = Math.round(pct * this.totalFrames);
+      AnnotationSystem.seekToFrame(frame);
+    });
+  },
+
+  buildMarkers(version) {
+    const tl = document.getElementById('frame-timeline');
+    if (!tl) return;
+    /* Remove old markers only */
+    tl.querySelectorAll('.ftl-marker').forEach(m => m.remove());
+
+    const frames = AnnotationStore.allFrames(version);
+    frames.forEach(frame => {
+      const pct  = frame / this.totalFrames;
+      const pad  = 10;
+      const tl2  = document.getElementById('frame-timeline');
+      if (!tl2) return;
+      const w    = tl2.offsetWidth - pad * 2;
+      const left = pad + pct * w;
+
+      /* Determine role from first annotation on this frame */
+      const anns  = AnnotationStore.forFrame(version, frame);
+      const notes = AnnotationStore.notesForFrame(version, frame);
+      const role  = (anns.length || notes.length)
+        ? (notes.some(n => n.role === 'supervisor') ? 'supervisor' : 'artist')
+        : 'supervisor';
+
+      const m = document.createElement('div');
+      m.className  = 'ftl-marker';
+      m.dataset.frame = frame;
+      m.dataset.role  = role;
+      m.dataset.label = `fr ${frame}`;
+      m.style.left    = left + 'px';
+      m.title         = `Frame ${frame}`;
+      m.addEventListener('click', e => {
+        e.stopPropagation();
+        AnnotationSystem.seekToFrame(frame);
+      });
+      tl.appendChild(m);
+    });
+  },
+
+  updatePlayhead(frame) {
+    const ph  = document.getElementById('ftl-playhead');
+    const tl  = document.getElementById('frame-timeline');
+    if (!ph || !tl) return;
+    const pad  = 10;
+    const w    = tl.offsetWidth - pad * 2;
+    const pct  = frame / this.totalFrames;
+    ph.style.left = (pad + pct * w) + 'px';
+
+    /* Highlight active marker */
+    tl.querySelectorAll('.ftl-marker').forEach(m => {
+      m.classList.toggle('ftlm-active', parseInt(m.dataset.frame) === frame);
+    });
+  },
+};
+
+/* Public timeline API used by playback. Keeps the visual playhead and markers live. */
+const Timeline = {
+  update(frame) {
+    const playhead = document.getElementById('ftl-playhead');
+    const total = Player?.totalFrames || FrameTimeline.totalFrames || 320;
+    const percent = Math.max(0, Math.min(100, (frame / total) * 100));
+    if (playhead) playhead.style.left = percent + '%';
+
+    let hitMarker = null;
+    document.querySelectorAll('.ftl-marker').forEach(marker => {
+      const markerFrame = Number(marker.dataset.frame);
+      const near = Math.abs(markerFrame - frame) < 2;
+      const hit = Math.round(frame) === markerFrame;
+      marker.classList.toggle('active', near);
+      marker.classList.toggle('ftlm-active', hit);
+      if (hit) hitMarker = marker;
+    });
+
+    if (hitMarker) this.pulse(hitMarker, playhead);
+  },
+
+  pulse(marker, playhead) {
+    marker.classList.remove('ftlm-hit');
+    if (playhead) playhead.classList.remove('ftl-hit');
+    void marker.offsetWidth;
+    marker.classList.add('ftlm-hit');
+    if (playhead) playhead.classList.add('ftl-hit');
+  },
+};
+window.Timeline = Timeline;
+
+/* ── NOTE SYNC ───────────────────────────────────────── */
+const NoteSync = {
+  _lastHighlight: null,
+  _lastContextFrame: null,
+
+  buildThread(version) {
+    const thread = document.getElementById('cn-thread');
+    if (!thread) return;
+    const notes = AnnotationStore.getNotes(version);
+
+    thread.innerHTML = notes.map(n => {
+      const isSup    = n.role === 'supervisor';
+      const frameTag = n.frame != null
+        ? `<div class="cn-frame-tag" onclick="AnnotationSystem.seekToFrame(${n.frame})">
+             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+             Frame ${n.frame}
+           </div>`
+        : '';
+      const frameBadge = n.frame != null
+        ? `<span class="cn-frame-badge">${n.frame}</span>`
+        : '';
+
+      return `<div class="cn-msg ${isSup ? 'cn-sup' : 'cn-art'}" data-frame="${n.frame ?? ''}" data-note-id="${n.id}">
+        <div class="cn-av ${isSup ? 'cn-av-sup' : 'cn-av-art'}">${n.initials}</div>
+        <div class="cn-body">
+          <div class="cn-hdr">
+            <span class="cn-author">${n.author}</span>
+            <span class="cn-role-badge ${isSup ? 'cn-role-sup' : 'cn-role-art'}">${isSup ? 'Supervisor' : 'You'}</span>
+            ${frameBadge}
+            <span class="cn-time">${n.time}</span>
+          </div>
+          <div class="cn-txt">${n.text}</div>
+          ${frameTag}
+        </div>
+      </div>`;
+    }).join('');
+  },
+
+  showContext(version, frame) {
+    const pop = document.getElementById('context-note-pop');
+    if (!pop) return;
+    const notes = AnnotationStore.notesForFrame(version, frame);
+
+    if (!notes.length) {
+      this._lastContextFrame = null;
+      pop.classList.add('context-note-hidden');
+      pop.innerHTML = '';
+      return;
+    }
+
+    if (this._lastContextFrame === frame && !pop.classList.contains('context-note-hidden')) return;
+    this._lastContextFrame = frame;
+    const primary = notes[0];
+    const more = notes.length > 1 ? ` +${notes.length - 1} more` : '';
+    pop.innerHTML = `
+      <div class="context-note-kicker">
+        <span>Frame Feedback</span>
+        <span class="context-note-frame">fr ${frame}${more}</span>
+      </div>
+      <div class="context-note-body">${escHtml(primary.text)}</div>
+      <div class="context-note-meta">${escHtml(primary.author)} · ${escHtml(primary.time)}</div>`;
+    pop.classList.remove('context-note-hidden');
+  },
+
+  highlightFrame(frame) {
+    /* Remove previous highlight */
+    if (this._lastHighlight) {
+      this._lastHighlight.classList.remove('cn-active-frame');
+      this._lastHighlight = null;
+    }
+    if (frame == null) return;
+
+    /* Find note matching this frame */
+    const thread  = document.getElementById('cn-thread');
+    if (!thread) return;
+    const match = thread.querySelector(`[data-frame="${frame}"]`);
+    if (!match) return;
+
+    match.classList.add('cn-active-frame');
+    this._lastHighlight = match;
+
+    /* Scroll note into view (smooth) */
+    match.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+    /* If notes tab is not active, pulse the tab badge */
+    const notesTab = document.querySelector('.tab[data-tab="notes"]');
+    if (notesTab && !notesTab.classList.contains('active')) {
+      notesTab.classList.add('tab-pulse');
+      setTimeout(() => notesTab.classList.remove('tab-pulse'), 1200);
+    }
+  },
+};
+
+/* ── MAIN ORCHESTRATOR ───────────────────────────────── */
+const AnnotationSystem = {
+  _overlayOn: false,
+  _currentFrame: 84,
+  _currentVersion: 'v012',
+
+  init() {
+    AnnotationCanvas.init();
+    FrameTimeline.init();
+    this._currentVersion = (typeof VersionStore !== 'undefined')
+      ? VersionStore.activeVersion : 'v012';
+
+    /* Build initial state */
+    this._build(this._currentVersion);
+
+    /* Player calls AnnotationSystem.onFrameChange directly on every tick. */
+    this._patchPlayer();
+
+    /* Listen for version changes */
+    if (typeof VersionStore !== 'undefined') {
+      const _origSelect = VersionStore.select?.bind(VersionStore);
+      if (_origSelect) {
+        VersionStore.select = (tag) => {
+          _origSelect(tag);
+          this._currentVersion = tag;
+          this._build(tag);
+          if (typeof ReviewSession !== 'undefined') ReviewSession.loadNotes(tag);
+        };
+      }
+    }
+
+    this.seekToFrame(this._currentFrame);
+  },
+
+  _build(version) {
+    FrameTimeline.buildMarkers(version);
+    NoteSync.buildThread(version);
+    AnnotationCanvas.render(version, this._currentFrame);
+    FrameTimeline.updatePlayhead(this._currentFrame);
+    NoteSync.showContext(version, this._currentFrame);
+  },
+
+  _patchPlayer() {
+    /* Kept as an init hook for older code paths; Player now owns frame dispatch. */
+  },
+
+  onFrameChange(frame) {
+    this._onFrame(frame);
+  },
+
+  getNoteAtFrame(frame) {
+    return AnnotationStore.notesForFrame(this._currentVersion, Math.round(frame))[0] || null;
+  },
+
+  getNoteNear(frame) {
+    const notes = AnnotationStore.getNotes(this._currentVersion)
+      .filter(note => note.frame != null);
+    return notes.find(note => Math.abs(note.frame - frame) < 2) || null;
+  },
+
+  showContextPopup(note, frame) {
+    if (!note) return;
+    const el = document.getElementById('context-note-pop');
+    if (!el) return;
+
+    el.innerHTML = `
+      <div class="context-note-kicker">
+        <span>Frame Feedback</span>
+        <span class="context-note-frame">fr ${note.frame ?? Math.round(frame)}</span>
+      </div>
+      <div class="context-note-body">${escHtml(note.text)}</div>
+      <div class="context-note-meta">${escHtml(note.author)} · ${escHtml(note.time)}</div>`;
+    el.style.display = 'flex';
+    el.style.opacity = '0';
+    el.style.transform = 'translateY(10px) scale(0.95)';
+    el.classList.remove('context-note-hidden');
+
+    requestAnimationFrame(() => {
+      el.style.transition = 'opacity 0.2s ease, transform 0.2s ease, filter 0.2s ease';
+      el.style.opacity = '1';
+      el.style.transform = 'translateY(0) scale(1)';
+      el.style.filter = '';
+    });
+  },
+
+  hideContextPopup() {
+    const pop = document.getElementById('context-note-pop');
+    if (!pop) return;
+    pop.style.opacity = '0';
+    pop.style.transform = 'translateY(10px) scale(0.95)';
+    pop.style.filter = 'blur(2px)';
+    setTimeout(() => {
+      pop.classList.add('context-note-hidden');
+      pop.style.display = 'none';
+      pop.innerHTML = '';
+    }, 200);
+  },
+
+  _onFrame(frame, force = false) {
+    const displayFrame = Math.round(frame);
+    if (!force && this._currentFrame === displayFrame) return;
+    this._currentFrame = displayFrame;
+    AnnotationCanvas.render(this._currentVersion, displayFrame);
+    Timeline.update(frame);
+    NoteSync.highlightFrame(displayFrame);
+    const note = this.getNoteAtFrame(displayFrame);
+    if (note) this.showContextPopup(note, displayFrame);
+    else this.hideContextPopup();
+  },
+
+  seekToFrame(frame) {
+    frame = Math.round(Math.max(0, Math.min(Player.totalFrames, frame)));
+    Player.progress = (frame / Player.totalFrames) * 100;
+    const fill = document.getElementById('main-progress-fill');
+    if (fill) fill.style.width = Player.progress + '%';
+    const tc = document.getElementById('main-timecode');
+    if (tc) {
+      const s = Math.floor(frame / 24);
+      const fr = frame % 24;
+      tc.textContent = `${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}:${String(fr).padStart(2,'0')}`;
+    }
+    this._onFrame(frame, true);
+    /* Keep notes contextual in the viewer; the Notes tab still highlights if open. */
+    const hasNote = AnnotationStore.notesForFrame(this._currentVersion, frame).length > 0;
+    if (hasNote) {
+      NoteSync.highlightFrame(frame);
+      NoteSync.showContext(this._currentVersion, frame);
+    }
+  },
+
+  toggleOverlay() {
+    this._overlayOn = !this._overlayOn;
+    AnnotationCanvas.setVisible(this._overlayOn);
+    const btn = document.getElementById('ann-toggle');
+    if (btn) btn.classList.toggle('active', this._overlayOn);
+    if (this._overlayOn) {
+      AnnotationCanvas.render(this._currentVersion, this._currentFrame);
+    }
+    showToast(this._overlayOn ? 'info' : 'info',
+      this._overlayOn ? 'Annotations visible' : 'Annotations hidden', );
+  },
+};
+window.AnnotationSystem = AnnotationSystem;
+
+/* Tab pulse style */
+const _s = document.createElement('style');
+_s.textContent = `.tab-pulse{animation:tabPulse .6s ease 2;}@keyframes tabPulse{0%,100%{color:var(--t2)}50%{color:var(--amber);}}`;
+document.head.appendChild(_s);
+
+
+
+
+
+
+
+/* ═══════════════════════════════════════════════════════════════
+   REVIEW MODE  —  fixed-overlay, self-contained player + notes
+═══════════════════════════════════════════════════════════════ */
+const ReviewMode = {
+  active:     false,
+  _active:    false, // retained for the legacy overlay keyboard player below
+  _playing:   false,
+  _frame:     84,
+  _total:     320,
+  _fps:       24,
+  _timer:     null,
+  _pfActive:  false,
+  _pfTimer:   null,
+  _pfIdx:     0,
+  _annOn:     false,
+  _canvas:    null,
+  _ctx:       null,
+  _keyFn:     null,
+  _flashT:    null,
+  _keysT:     null,
+  _hiddenPanels: [],
+
+  /* ─── Enter / Exit ─────────────────────────────────────── */
+  enter() {
+    if (this.active) return;
+    this.active = true;
+    this._active = true;
+
+    if (typeof TabSystem !== 'undefined') TabSystem.switch('overview');
+    document.body.classList.add('review-active');
+
+    /* Explicit panel hiding for review mode. */
+    this._hiddenPanels = ['.col-left', '.versions-col', '.col-right']
+      .map(selector => {
+        const el = document.querySelector(selector);
+        if (!el) return null;
+        const display = el.style.display;
+        return { el, display };
+      })
+      .filter(Boolean);
+    setTimeout(() => {
+      if (this.active) document.body.classList.add('dashboard-review-mode');
+    }, 190);
+
+    const viewer = document.querySelector('.viewer');
+    if (viewer) viewer.classList.add('review-mode');
+
+    const ov = document.getElementById('rm-overlay');
+    if (ov) ov.classList.remove('rm-open');
+
+    const btn = document.getElementById('rm-btn');
+    if (btn) btn.classList.add('rm-active');
+    const label = document.getElementById('rm-btn-label');
+    if (label) label.textContent = 'Exit Review Mode';
+
+    if (typeof AnnotationSystem !== 'undefined') {
+      this._frame = AnnotationSystem._currentFrame;
+      AnnotationSystem._build(AnnotationSystem._currentVersion);
+      AnnotationSystem.onFrameChange(this._frame);
+    }
+
+    requestAnimationFrame(() => {
+      if (typeof AnnotationCanvas !== 'undefined') AnnotationCanvas._resize();
+      if (typeof FrameTimeline !== 'undefined' && typeof AnnotationSystem !== 'undefined') {
+        FrameTimeline.buildMarkers(AnnotationSystem._currentVersion);
+        FrameTimeline.updatePlayhead(AnnotationSystem._currentFrame);
+      }
+    });
+  },
+
+  exit() {
+    if (!this.active) return;
+    this.active = false;
+    this._active = false;
+    this.stop();
+    this.stopPF();
+    this._unbindKeys();
+    clearTimeout(this._keysT);
+    document.body.classList.remove('review-active');
+
+    /* Restore panels exactly to their previous inline display values. */
+    document.body.classList.remove('dashboard-review-mode');
+    this._hiddenPanels.forEach(({ el, display }) => { el.style.display = display; });
+    this._hiddenPanels = [];
+
+    const viewer = document.querySelector('.viewer');
+    if (viewer) viewer.classList.remove('review-mode');
+
+    const ov = document.getElementById('rm-overlay');
+    if (ov) ov.classList.remove('rm-open');
+
+    const btn = document.getElementById('rm-btn');
+    if (btn) btn.classList.remove('rm-active');
+    const label = document.getElementById('rm-btn-label');
+    if (label) label.textContent = 'Enter Review Mode';
+
+    requestAnimationFrame(() => {
+      if (typeof AnnotationCanvas !== 'undefined') AnnotationCanvas._resize();
+      if (typeof FrameTimeline !== 'undefined' && typeof AnnotationSystem !== 'undefined') {
+        FrameTimeline.buildMarkers(AnnotationSystem._currentVersion);
+        FrameTimeline.updatePlayhead(AnnotationSystem._currentFrame);
+      }
+    });
+  },
+
+  toggle() {
+    this.active ? this.exit() : this.enter();
+  },
+
+  /* ─── Canvas ────────────────────────────────────────────── */
+  _initCanvas() {
+    this._canvas = document.getElementById('rm-canvas');
+    if (!this._canvas) return;
+    this._ctx = this._canvas.getContext('2d');
+    this._resize();
+    window.addEventListener('resize', () => { if (this._active) this._resize(); });
+  },
+
+  _resize() {
+    if (!this._canvas) return;
+    const wrap = document.getElementById('rm-viewer-wrap');
+    if (!wrap) return;
+    const r = wrap.getBoundingClientRect();
+    this._canvas.width  = r.width  || 800;
+    this._canvas.height = r.height || 500;
+    this._redraw();
+  },
+
+  _redraw() {
+    if (!this._ctx || !this._canvas || !this._annOn) {
+      if (this._ctx) this._ctx.clearRect(0,0,this._canvas.width,this._canvas.height);
+      return;
+    }
+    const ver  = typeof VersionStore !== 'undefined' ? VersionStore.activeVersion : 'v012';
+    const anns = typeof AnnotationStore !== 'undefined'
+      ? AnnotationStore.forFrame(ver, this._frame) : [];
+    const W = this._canvas.width, H = this._canvas.height;
+    this._ctx.clearRect(0,0,W,H);
+    anns.forEach((a,i) => this._drawShape(a,W,H,i));
+  },
+
+  _drawShape(a,W,H,idx) {
+    const ctx=this._ctx, c=a.color||'#F59E0B';
+    ctx.save(); ctx.globalAlpha=0.9; ctx.strokeStyle=c; ctx.lineWidth=2.5;
+    ctx.setLineDash([]);
+    if (a.shape==='circle'){
+      const cx=a.x*W,cy=a.y*H,r=a.r*Math.min(W,H);
+      ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2); ctx.stroke();
+      ctx.fillStyle=c+'22'; ctx.fill();
+      this._label(ctx,a.label,cx,cy-r-8,c);
+    }
+    if (a.shape==='arrow'){
+      const x1=a.x1*W,y1=a.y1*H,x2=a.x2*W,y2=a.y2*H;
+      ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+      const ang=Math.atan2(y2-y1,x2-x1),hl=14;
+      ctx.beginPath();
+      ctx.moveTo(x2,y2); ctx.lineTo(x2-hl*Math.cos(ang-Math.PI/6),y2-hl*Math.sin(ang-Math.PI/6));
+      ctx.moveTo(x2,y2); ctx.lineTo(x2-hl*Math.cos(ang+Math.PI/6),y2-hl*Math.sin(ang+Math.PI/6));
+      ctx.stroke();
+      this._label(ctx,a.label,x1,y1-10,c);
+    }
+    if (a.shape==='highlight'){
+      const x=a.x*W,y=a.y*H,w=a.w*W,h=a.h*H;
+      ctx.setLineDash([6,3]);
+      ctx.strokeRect(x,y,w,h);
+      ctx.fillStyle=c+'14'; ctx.fillRect(x,y,w,h);
+      ctx.setLineDash([]);
+      this._label(ctx,a.label,x+w/2,y-8,c);
+    }
+    ctx.restore();
+  },
+
+  _label(ctx,text,x,y,color){
+    if(!text)return;
+    ctx.save();
+    ctx.font='700 10px "Plus Jakarta Sans",sans-serif';
+    const m=ctx.measureText(text),p=5,h=16;
+    ctx.fillStyle='rgba(10,10,18,0.82)';
+    ctx.beginPath();
+    if(ctx.roundRect) ctx.roundRect(x-m.width/2-p,y-h/2-1,m.width+p*2,h,3);
+    else ctx.rect(x-m.width/2-p,y-h/2-1,m.width+p*2,h);
+    ctx.fill();
+    ctx.fillStyle=color; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(text,x,y+1);
+    ctx.restore();
+  },
+
+  toggleAnnotations(){
+    this._annOn = !this._annOn;
+    const c = document.getElementById('rm-canvas');
+    const b = document.getElementById('rm-ann-btn');
+    if (c) c.classList.toggle('hidden', !this._annOn);
+    if (b) b.classList.toggle('active', this._annOn);
+    this._redraw();
+  },
+
+  /* ─── Timeline ──────────────────────────────────────────── */
+  _buildTimeline(){
+    const tl = document.getElementById('rm-timeline');
+    if (!tl) return;
+    tl.querySelectorAll('.rm-tl-marker').forEach(m=>m.remove());
+    const ver = typeof VersionStore !== 'undefined' ? VersionStore.activeVersion : 'v012';
+    const frames = typeof AnnotationStore !== 'undefined'
+      ? AnnotationStore.allFrames(ver) : [];
+    const rail = document.getElementById('rm-tl-rail');
+    const pad = 12;
+
+    frames.forEach(f => {
+      const pct  = f / this._total;
+      const left = pad + pct * (tl.offsetWidth - pad*2);
+      const ver2 = typeof AnnotationStore !== 'undefined'
+        ? AnnotationStore : null;
+      const hasSup = ver2
+        ? ver2.notesForFrame(ver,f).some(n=>n.role==='supervisor')
+        : false;
+      const m = document.createElement('div');
+      m.className = 'rm-tl-marker';
+      m.dataset.frame = f;
+      m.dataset.role  = hasSup ? 'supervisor' : 'artist';
+      m.dataset.label = `fr ${f}`;
+      m.style.left    = left+'px';
+      m.addEventListener('click', e => {
+        e.stopPropagation();
+        this.seekToFrame(f);
+      });
+      tl.appendChild(m);
+    });
+
+    // Click rail to seek
+    tl.onclick = (e) => {
+      if (e.target.classList.contains('rm-tl-marker')) return;
+      const r   = tl.getBoundingClientRect();
+      const pct = Math.max(0, Math.min(1,(e.clientX-r.left-pad)/(r.width-pad*2)));
+      this.seekToFrame(Math.round(pct*this._total));
+    };
+  },
+
+  _updatePlayhead(){
+    const ph  = document.getElementById('rm-tl-playhead');
+    const tl  = document.getElementById('rm-timeline');
+    const pf  = document.getElementById('rm-progress-fill');
+    if (!ph||!tl) return;
+    const pad  = 12;
+    const pct  = this._frame / this._total;
+    ph.style.left = (pad + pct*(tl.offsetWidth-pad*2))+'px';
+    if (pf) pf.style.width = (pct*100)+'%';
+
+    // Highlight active marker
+    tl.querySelectorAll('.rm-tl-marker').forEach(m => {
+      m.classList.toggle('active', parseInt(m.dataset.frame)===this._frame);
+    });
+  },
+
+  /* ─── Playback ──────────────────────────────────────────── */
+  togglePlay(){
+    this._playing ? this.stop() : this.play();
+  },
+
+  play(){
+    this._playing = true;
+    const btn = document.getElementById('rm-play-btn');
+    if (btn) btn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>';
+    clearInterval(this._timer);
+    this._timer = setInterval(()=>{
+      this._frame = (this._frame+1) % this._total;
+      this._onFrame();
+    }, 1000/this._fps);
+  },
+
+  stop(){
+    this._playing = false;
+    clearInterval(this._timer);
+    const btn = document.getElementById('rm-play-btn');
+    if (btn) btn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>';
+  },
+
+  stepFrame(delta){
+    if (this._playing) this.stop();
+    this._frame = Math.max(0, Math.min(this._total-1, this._frame+delta));
+    this._onFrame();
+  },
+
+  seek(frame){
+    this._frame = Math.max(0,Math.min(this._total-1,Math.round(frame)));
+    this._onFrame();
+  },
+
+  seekToFrame(f){ this.seek(f); },
+
+  scrub(e){
+    const bar = document.getElementById('rm-progress');
+    if (!bar) return;
+    const r = bar.getBoundingClientRect();
+    this.seek(Math.round(((e.clientX-r.left)/r.width)*this._total));
+  },
+
+  _onFrame(){
+    this._updatePlayhead();
+    this._updateTimecode();
+    this._redraw();
+    this._syncNotes(this._frame);
+  },
+
+  _updateTimecode(){
+    const tc = document.getElementById('rm-timecode');
+    if (!tc) return;
+    const f  = this._frame;
+    const s  = Math.floor(f/this._fps);
+    const fr = f%this._fps;
+    const mm = String(Math.floor(s/60)).padStart(2,'0');
+    const ss = String(s%60).padStart(2,'0');
+    const ff = String(fr).padStart(2,'0');
+    tc.textContent = `${mm}:${ss}:${ff}`;
+  },
+
+  /* ─── Play Feedback ─────────────────────────────────────── */
+  _annotatedFrames(){
+    const ver = typeof VersionStore !== 'undefined' ? VersionStore.activeVersion : 'v012';
+    return typeof AnnotationStore !== 'undefined' ? AnnotationStore.allFrames(ver) : [];
+  },
+
+  togglePlayFeedback(){
+    this._pfActive ? this.stopPF() : this.startPF();
+  },
+
+  startPF(){
+    const frames = this._annotatedFrames();
+    if (!frames.length){ showToast('warn','No annotated frames'); return; }
+    if (this._playing) this.stop();
+    this._pfActive = true;
+    this._pfIdx    = 0;
+    const btn = document.getElementById('rm-pf-btn');
+    if (btn){ btn.classList.add('active'); btn.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="10" height="10"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg> Stop'; }
+    const step = () => {
+      if (!this._pfActive || this._pfIdx>=frames.length){ this.stopPF(); return; }
+      const f = frames[this._pfIdx++];
+      this.seek(f);
+      const ver = typeof VersionStore !== 'undefined' ? VersionStore.activeVersion : 'v012';
+      const hasSup = typeof AnnotationStore !== 'undefined'
+        ? AnnotationStore.notesForFrame(ver,f).some(n=>n.role==='supervisor') : false;
+      this._pfTimer = setTimeout(step, hasSup ? 2000 : 1400);
+    };
+    step();
+  },
+
+  stopPF(){
+    this._pfActive = false;
+    clearTimeout(this._pfTimer);
+    const btn = document.getElementById('rm-pf-btn');
+    if (btn){ btn.classList.remove('active'); btn.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="10" height="10"><polygon points="5 3 19 12 5 21 5 3"/></svg> Play Feedback'; }
+  },
+
+  /* ─── Notes sync ────────────────────────────────────────── */
+  _syncNotes(frame){
+    const list  = document.getElementById('rm-notes-list');
+    const badge = document.getElementById('rm-frame-badge');
+    if (!list) return;
+    if (badge) badge.textContent = `fr ${frame}`;
+
+    const ver   = typeof VersionStore !== 'undefined' ? VersionStore.activeVersion : 'v012';
+    const notes = typeof AnnotationStore !== 'undefined'
+      ? AnnotationStore.getNotes(ver).filter(n=>n.frame===frame||n.frame==null&&frame===0) : [];
+    const frameNotes = typeof AnnotationStore !== 'undefined'
+      ? AnnotationStore.notesForFrame(ver,frame) : [];
+    const show = frameNotes.length ? frameNotes : [];
+
+    if (!show.length){
+      list.innerHTML = '<div class="rm-empty-msg">No feedback on this frame</div>';
+      return;
+    }
+
+    list.innerHTML = show.map(n=>`
+      <div class="rm-note ${n.role==='supervisor'?'sup':'art'}">
+        <div class="rm-note-author">${n.author}</div>
+        <div class="rm-note-text">${n.text}</div>
+        ${n.frame!=null?`<div class="rm-note-frame" onclick="ReviewMode.seek(${n.frame})">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="3" width="20" height="14" rx="2"/></svg>
+          fr ${n.frame}
+        </div>`:''}
+      </div>`).join('');
+  },
+
+  nextAnnotation(){
+    const frames = this._annotatedFrames();
+    if (!frames.length) return;
+    const next = frames.find(f=>f>this._frame) ?? frames[0];
+    this.seek(next);
+  },
+
+  prevAnnotation(){
+    const frames = this._annotatedFrames();
+    if (!frames.length) return;
+    const prev = [...frames].reverse().find(f=>f<this._frame) ?? frames[frames.length-1];
+    this.seek(prev);
+  },
+
+  /* ─── Flash ─────────────────────────────────────────────── */
+  flash(text){
+    const el = document.getElementById('rm-rate-flash');
+    if (!el) return;
+    el.textContent = text;
+    el.classList.add('show');
+    clearTimeout(this._flashT);
+    this._flashT = setTimeout(()=>el.classList.remove('show'), 420);
+  },
+
+  _showKeys(){
+    const el = document.getElementById('rm-keys');
+    if (!el) return;
+    el.style.display = 'flex';
+    el.classList.add('visible');
+    clearTimeout(this._keysT);
+    this._keysT = setTimeout(()=>el.classList.remove('visible'), 3000);
+  },
+
+  /* ─── Keyboard ──────────────────────────────────────────── */
+  _bindKeys(){
+    this._keyFn = (e) => {
+      if (!this._active) return;
+      const tag = e.target.tagName;
+      if (tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT') return;
+      switch(e.key){
+        case 'j': case 'J':
+          e.preventDefault();
+          if(this._playing)this.stop();
+          this.seek(Math.max(0,this._frame-30));
+          this.flash('◀◀');
+          break;
+        case 'k': case 'K':
+          e.preventDefault();
+          if(this._playing)this.stop(); else this.play();
+          this.flash(this._playing?'▶':'⏸');
+          break;
+        case 'l': case 'L':
+          e.preventDefault();
+          if(!this._playing)this.play();
+          this.flash('▶');
+          break;
+        case ' ':
+          e.preventDefault();
+          this.togglePlay();
+          break;
+        case 'ArrowLeft':
+          e.preventDefault();
+          this.stepFrame(-1);
+          break;
+        case 'ArrowRight':
+          e.preventDefault();
+          this.stepFrame(1);
+          break;
+        case 'n': case 'N':
+          e.preventDefault();
+          this.nextAnnotation();
+          break;
+        case 'p': case 'P':
+          e.preventDefault();
+          this.prevAnnotation();
+          break;
+        case 'Escape':
+          this.exit();
+          break;
+      }
+    };
+    document.addEventListener('keydown', this._keyFn);
+  },
+
+  _unbindKeys(){
+    if (this._keyFn){
+      document.removeEventListener('keydown', this._keyFn);
+      this._keyFn = null;
+    }
+  },
+};
+window.ReviewMode = ReviewMode;
