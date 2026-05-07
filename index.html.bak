@@ -1,0 +1,1271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1440, initial-scale=1.0">
+<title>Frameshift — Artist Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./styles.css">
+<script src="./app.js" defer></script>
+<script src="./reviewEngine.js" defer></script>
+</head>
+<body>
+<div id="root"></div>
+
+<template id="artist-app-template">
+<div class="app artist-app">
+
+  <!-- ══════════════ TOP BAR ══════════════ -->
+  <header class="topbar">
+    <!-- Logo -->
+    <a class="logo" href="#">
+      <div class="logo-mark">
+        <!-- FS icon: two overlapping rectangles -->
+        <svg viewBox="0 0 18 18" fill="white"><rect x="1" y="5" width="7" height="10" rx="1.2"/><rect x="9" y="1" width="8" height="14" rx="1.2" opacity="0.7"/></svg>
+      </div>
+      <span class="logo-name">FRAMESHIFT</span>
+    </a>
+
+    <!-- Hamburger -->
+    <button class="tb-hamburger" aria-label="Menu">
+      <span></span><span></span><span></span>
+    </button>
+
+    <!-- Project pill -->
+    <div class="project-pill">
+      Fire Temple
+      <svg viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+    </div>
+
+    <!-- Search -->
+    <div class="search-bar">
+      <svg class="search-icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><line x1="24" y1="24" x2="16.65" y2="16.65"/></svg>
+      <input type="text" placeholder="Search shots, tasks…">
+      <span class="search-kbd">⌘K</span>
+    </div>
+
+    <!-- Right icons -->
+    <div class="tb-right">
+      <button class="tb-icon" aria-label="Mail">
+        <svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><polyline points="2,4 12,13 22,4"/></svg>
+      </button>
+      <button class="tb-icon" aria-label="Notifications">
+        <svg viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+        <span class="notif-badge">5</span>
+      </button>
+      <button class="tb-icon" aria-label="Help">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      </button>
+      <div class="user-chip" onclick="UserMenu.toggle(event)">
+        <div class="user-av">AJ</div>
+        <div class="user-info">
+          <div class="user-name">Alex Chen</div>
+          <div class="user-role">FX Artist</div>
+        </div>
+        <svg class="user-menu-chevron" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+        <div class="user-menu" id="user-menu">
+          <button onclick="UserMenu.profile(event)">View Profile</button>
+          <button onclick="UserMenu.setRole(event,'artist')">Switch to Artist</button>
+          <button onclick="UserMenu.setRole(event,'supervisor')">Switch to Supervisor</button>
+          <button onclick="UserMenu.signOut(event)">Sign Out</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ══════════════ BODY ══════════════ -->
+  <div class="body-wrap">
+
+    <!-- ── SIDEBAR ── -->
+    <nav class="sidebar">
+      <div class="sidebar-nav">
+        <a class="nav-item active artist-only" id="nav-dashboard" href="#" onclick="event.preventDefault();switchTab('dashboard')">
+          <svg viewBox="0 0 24 24"><path d="M3 13h8V3H3v10z"/><path d="M13 21h8V11h-8v10z"/><path d="M13 3v6h8V3h-8z"/><path d="M3 21h8v-6H3v6z"/></svg>
+          Dashboard
+        </a>
+        <a class="nav-item artist-only" id="nav-tasks" href="#" onclick="event.preventDefault();switchTab('overview')">
+          <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+          My Tasks
+        </a>
+        <a class="nav-item artist-only" id="nav-versions" href="#" onclick="event.preventDefault();switchTab('versions')">
+          <svg viewBox="0 0 24 24"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2,17 12,22 22,17"/><polyline points="2,12 12,17 22,12"/></svg>
+          Versions
+        </a>
+        <a class="nav-item artist-only" id="nav-notes" href="#" onclick="event.preventDefault();switchTab('notes')">
+          <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          Notes
+        </a>
+        <div class="sidebar-spacer"></div>
+      </div>
+
+      <div class="sidebar-bottom">
+        <a class="nav-item" href="#">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M16.24 7.76a6 6 0 0 1 0 8.49M4.93 19.07a10 10 0 0 1 0-14.14M7.76 16.24a6 6 0 0 1 0-8.49"/></svg>
+          Settings
+        </a>
+        <a class="nav-item" href="#">
+          <svg viewBox="0 0 24 24"><polyline points="11 17 6 12 11 7"/><polyline points="18 17 13 12 18 7"/></svg>
+          Collapse
+        </a>
+      </div>
+    </nav>
+
+    <!-- ══ MAIN ══ -->
+    <div class="main">
+
+      <!-- 3-column area -->
+      <div class="cols">
+
+        <!-- ─── LEFT: Task List ─── -->
+        <div class="col-left">
+          <div class="col-left-inner">
+            <div class="section-lbl">Assigned to You</div>
+
+            <!-- Current Task -->
+            <div class="current-task-card" data-shot="SH_0100" onclick="openTask('SH_0100')">
+              <div class="ctc-inner-lbl">Current Task</div>
+              <div class="ctc-body">
+                <div class="task-thumb">
+                  <div class="task-thumb-scene"></div>
+                </div>
+                <div class="task-info">
+                  <div class="task-name"></div>
+                  <div class="task-dept"></div>
+                  <div class="task-due-row">
+                    <span class="task-due-label">Due Today</span>
+                    <span class="task-due-time">6:00 PM</span>
+                  </div>
+                  <span class="badge badge-ip">In Progress</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Up Next -->
+            <div class="section-lbl" style="display:flex;align-items:center;gap:8px;">Up Next<span style="font-size:9px;font-weight:500;text-transform:none;letter-spacing:0;color:var(--t3);background:var(--bg-card);border:1px solid var(--b);border-radius:10px;padding:1px 7px;">assigned by supervisor</span></div>
+            <div class="up-next-card" data-shot="SH_0101" onclick="openTask('SH_0101')">
+              <div class="ctc-body">
+                <div class="task-thumb">
+                  <div class="task-thumb-scene" style="background:radial-gradient(ellipse at 50% 80%,rgba(30,60,120,0.8) 0%,transparent 70%);"></div>
+                </div>
+                <div class="task-info">
+                  <div class="task-name"></div>
+                  <div class="task-dept"></div>
+                  <div class="task-due-row">
+                    <span class="task-due-label">Due Tomorrow</span>
+                    <span class="task-due-time">10:00 AM</span>
+                  </div>
+                  <span class="badge badge-assigned">Assigned</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Other Assigned -->
+            <div class="other-hdr">
+              <span class="section-lbl" style="margin-bottom:0;">Other Assigned (3)</span>
+              <span class="view-all">View All</span>
+            </div>
+
+            <div class="task-row" data-shot="SH_0102" onclick="openTask('SH_0102')">
+              <div class="task-row-thumb">
+                <div style="width:100%;height:100%;background:linear-gradient(135deg,#0D1A2A,#0A1A1A);"></div>
+              </div>
+              <div class="task-row-body">
+                <div class="task-row-name"></div>
+                <div class="task-row-meta"></div>
+              </div>
+              <div class="task-row-right">
+                <div class="task-row-due">Due Fri, 24 May</div>
+                <div style="font-size:11px;color:var(--t2);">1:00 PM</div>
+              </div>
+            </div>
+
+            <div class="task-row" data-shot="SH_0103" onclick="openTask('SH_0103')">
+              <div class="task-row-thumb">
+                <div style="width:100%;height:100%;background:linear-gradient(135deg,#1A0D2A,#2A1010);"></div>
+              </div>
+              <div class="task-row-body">
+                <div class="task-row-name"></div>
+                <div class="task-row-meta"></div>
+              </div>
+              <div class="task-row-right">
+                <div class="task-row-due">Due Fri, 24 May</div>
+                <div style="font-size:11px;color:var(--t2);">4:00 PM</div>
+              </div>
+            </div>
+
+            <div class="task-row" data-shot="SH_0104" onclick="openTask('SH_0104')">
+              <div class="task-row-thumb">
+                <div style="width:100%;height:100%;background:linear-gradient(135deg,#0D2A1A,#101A0A);"></div>
+              </div>
+              <div class="task-row-body">
+                <div class="task-row-name"></div>
+                <div class="task-row-meta"></div>
+              </div>
+              <div class="task-row-right">
+                <div class="task-row-due">Due Mon, 27 May</div>
+                <div style="font-size:11px;color:var(--t2);">10:00 AM</div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- ─── CENTER: Work Area ─── -->
+        <div class="col-center">
+
+          <!-- Center-left: Task Detail + Viewer -->
+          <div class="task-detail">
+            <!-- Compact shot bar + tabs -->
+            <div class="center-bar">
+              <span class="center-shot-id"></span>
+              <span class="center-shot-dept">Comp · Main Comp</span>
+              <div class="tabs" id="center-tabs">
+                <div class="tab active" data-tab="dashboard">Dashboard</div>
+                <div class="tab" data-tab="overview">Overview</div>
+                <div class="tab" data-tab="notes">Notes <span class="tab-ct" id="tc-notes">2</span></div>
+                <div class="tab" data-tab="versions">Versions <span class="tab-ct" id="tc-versions">4</span></div>
+                <div class="tab" data-tab="info">Info</div>
+              </div>
+              <button class="rm-btn" id="rm-btn" onclick="ReviewMode.toggle()">
+                <svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+                <span id="rm-btn-label">Enter Review Mode</span>
+              </button>
+            </div>
+
+            <!-- ── PANEL: DASHBOARD (default landing) ── -->
+            <div class="tab-panel active" data-panel="dashboard" id="panel-dashboard">
+              <div class="artist-dashboard">
+                <header class="dash-welcome">
+                  <h1>Good morning, Alex</h1>
+                  <p>Here’s what’s happening with your work today.</p>
+                </header>
+
+                <section class="dash-card dash-focus-card">
+                  <div class="dash-section-kicker">Today’s Focus</div>
+                  <div class="dash-focus-grid">
+                    <div class="dash-shot-thumb dash-shot-fire"></div>
+                    <div class="dash-focus-main">
+                      <span class="dash-status-pill">In Progress</span>
+                      <h2></h2>
+                      <p></p>
+                      <div class="dash-focus-meta">
+                        <span></span>
+                        <span></span>
+                      </div>
+                    </div>
+                    <div class="dash-focus-deadline">
+                      <span>Deadline</span>
+                      <strong></strong>
+                      <em></em>
+                    </div>
+                    <div class="dash-focus-progress">
+                      <span>Status</span>
+                      <strong></strong>
+                      <div class="dash-progress-track"><div style="width:60%;"></div></div>
+                      <small>60%</small>
+                    </div>
+                    <div class="dash-focus-actions">
+                      <button class="dash-primary-btn" onclick="DashboardActions.continueWorking()">Continue Working</button>
+                      <button class="dash-secondary-btn" onclick="DashboardActions.openShot()">Open Shot</button>
+                    </div>
+                  </div>
+                  <div class="dash-note-alert">You have <strong id="dash-new-notes">2</strong> new notes since last login</div>
+                </section>
+
+                <div class="dash-command-grid">
+                  <div class="dash-left-stack">
+                    <section class="dash-card dash-tasks-card">
+                    <div class="dash-card-head">
+                      <div>
+                          <div class="dash-section-kicker">My Tasks</div>
+                          <h2>Grouped by urgency</h2>
+                      </div>
+                        <button class="dash-link-btn" onclick="DashboardActions.openTasks('all')">View all tasks</button>
+                    </div>
+
+                      <div class="dash-task-columns">
+                        <div class="dash-task-column">
+                          <div class="dash-column-title hot">Due Today <span>(2)</span></div>
+                          <button class="dash-task-card" data-shot="SH_0102" onclick="openTask('SH_0102')">
+                            <span class="dash-mini-thumb dash-shot-smoke"></span>
+                            <span><strong>SH_0102</strong><em>Smoke Simulation</em><small>FX</small></span>
+                            <mark class="dash-tag due">Due Today</mark>
+                          </button>
+                          <button class="dash-task-card" data-shot="SH_0103" onclick="openTask('SH_0103')">
+                            <span class="dash-mini-thumb dash-shot-ember"></span>
+                            <span><strong>SH_0103</strong><em>Ember Detail Pass</em><small>FX</small></span>
+                            <mark class="dash-tag due">Due Today</mark>
+                          </button>
+                          <button class="dash-column-view" onclick="DashboardActions.openTasks('today')">View all 2 tasks</button>
+                        </div>
+
+                        <div class="dash-task-column">
+                          <div class="dash-column-title warn">Needs Review <span>(3)</span></div>
+                          <button class="dash-task-card" data-shot="SH_0098" onclick="openTask('SH_0098')">
+                            <span class="dash-mini-thumb dash-shot-fire"></span>
+                            <span><strong>SH_0098</strong><em>Fire Pass v003</em><small>FX</small></span>
+                            <mark class="dash-tag review">Needs Review</mark>
+                          </button>
+                          <button class="dash-task-card" data-shot="SH_0099" onclick="openTask('SH_0099')">
+                            <span class="dash-mini-thumb dash-shot-dark"></span>
+                            <span><strong>SH_0099</strong><em>Lighting Adjustment</em><small>Lighting</small></span>
+                            <mark class="dash-tag review">Needs Review</mark>
+                          </button>
+                          <button class="dash-task-card" data-shot="SH_0101" onclick="openTask('SH_0101')">
+                            <span class="dash-mini-thumb dash-shot-glow"></span>
+                            <span><strong>SH_0101</strong><em>Glow Variation</em><small>FX</small></span>
+                            <mark class="dash-tag review">Needs Review</mark>
+                          </button>
+                          <button class="dash-column-view" onclick="DashboardActions.openTasks('review')">View all 3 tasks</button>
+                        </div>
+
+                        <div class="dash-task-column">
+                          <div class="dash-column-title pin">Assigned <span>(5)</span></div>
+                          <button class="dash-task-card" data-shot="SH_0110" onclick="openTask('SH_0110')">
+                            <span class="dash-mini-thumb dash-shot-dark"></span>
+                            <span><strong>SH_0110</strong><em>Blocking Pass</em><small>Layout</small></span>
+                            <time>May 27</time>
+                          </button>
+                          <button class="dash-task-card" data-shot="SH_0112" onclick="openTask('SH_0112')">
+                            <span class="dash-mini-thumb dash-shot-smoke"></span>
+                            <span><strong>SH_0112</strong><em>FX Setup</em><small>FX</small></span>
+                            <time>May 28</time>
+                          </button>
+                          <button class="dash-task-card" data-shot="SH_0115" onclick="openTask('SH_0115')">
+                            <span class="dash-mini-thumb dash-shot-ember"></span>
+                            <span><strong>SH_0115</strong><em>Smoke Interaction</em><small>FX</small></span>
+                            <time>May 30</time>
+                          </button>
+                          <button class="dash-column-view" onclick="DashboardActions.openTasks('assigned')">View all 5 tasks</button>
+                        </div>
+                      </div>
+                    </section>
+
+                    <section class="dash-card dash-progress-card">
+                      <div class="dash-section-kicker">My Progress</div>
+                      <div class="dash-stat-grid">
+                        <div><span class="dash-stat-icon ok"></span><strong>3</strong><small>Completed Today</small></div>
+                        <div><span class="dash-stat-icon pending"></span><strong>6</strong><small>Pending Tasks</small></div>
+                        <div><span class="dash-stat-icon review"></span><strong>2</strong><small>In Review</small></div>
+                        <div><span class="dash-stat-icon overdue"></span><strong>1</strong><small>Overdue</small></div>
+                      </div>
+                      <div class="dash-weekly">
+                        <span>Weekly Progress</span>
+                        <div class="dash-progress-track"><div style="width:62%;"></div></div>
+                        <strong>62%</strong>
+                        <small>19 / 30 tasks completed</small>
+                      </div>
+                    </section>
+                  </div>
+
+                  <div class="dash-right-stack">
+                    <section class="dash-card dash-feedback-card">
+                      <div class="dash-card-head">
+                        <div>
+                          <div class="dash-section-kicker">Recent Feedback</div>
+                          <h2>Latest supervisor notes</h2>
+                    </div>
+                        <button class="dash-link-btn" onclick="DashboardActions.openTasks('notes')">View all</button>
+                      </div>
+                      <div class="dash-feedback-list">
+                        <button class="is-new" onclick="DashboardActions.openFeedback(84)">
+                          <span class="dash-avatar">SC</span>
+                          <span><strong>SH_0100 · Fire Temple – Wide</strong><em>Increase fire density in the mid ground around frame 120.</em></span>
+                          <time>1h ago</time><mark>New</mark>
+                        </button>
+                        <button class="is-new" onclick="DashboardActions.openFeedback(105)">
+                          <span class="dash-avatar">SC</span>
+                          <span><strong>SH_0101 · Fire Close Up</strong><em>The glow feels a bit too strong. Let’s tone it down.</em></span>
+                          <time>3h ago</time><mark>New</mark>
+                        </button>
+                        <button onclick="DashboardActions.openFeedback(90)">
+                          <span class="dash-avatar">SC</span>
+                          <span><strong>SH_0098 · Fire Pass</strong><em>Timing feels off in the second half. Please slow down the rise.</em></span>
+                          <time>1d ago</time><mark class="seen">Seen</mark>
+                        </button>
+                        <button onclick="DashboardActions.openFeedback(148)">
+                          <span class="dash-avatar ok">SC</span>
+                          <span><strong>SH_0095 · Wide Establish</strong><em>Looks good! Approved this version.</em></span>
+                          <time>2d ago</time><mark class="addressed">Addressed</mark>
+                        </button>
+                      </div>
+                      <button class="dash-column-view" onclick="DashboardActions.openTasks('notes')">Go to Notes</button>
+                    </section>
+
+                    <section class="dash-card dash-actions-card">
+                      <div class="dash-section-kicker">Quick Actions</div>
+                      <div class="dash-action-grid">
+                        <button onclick="DashboardActions.uploadVersion()"><span>Upload New Version</span><small>Add a new version</small></button>
+                        <button onclick="DashboardActions.continueWorking()"><span>Open Last Shot</span><small>Continue where you left off</small></button>
+                        <button onclick="DashboardActions.startReview()"><span>Start Review Mode</span><small>Review with annotation</small></button>
+                        <button onclick="DashboardActions.createNote()"><span>Create Note</span><small>Add a new note</small></button>
+                      </div>
+                    </section>
+                  </div>
+                </div>
+              </div>
+            </div><!-- /panel-dashboard -->
+
+
+            <!-- ── PANEL: OVERVIEW ── -->
+            <div class="tab-panel" data-panel="overview" id="panel-overview">
+              <!-- Viewer -->
+              <div class="viewer">
+                <div class="active-task-banner" id="active-task-banner">Working on SH_0100 · FX Simulation</div>
+                <div class="player-mode" id="player-mode">Review Mode</div>
+                <div class="viewer-scene">
+                  <div class="viewer-bg"></div>
+                  <div class="viewer-stars"></div>
+                  <div class="viewer-structure"></div>
+                  <div class="viewer-glow"></div>
+                  <div class="viewer-figure"></div>
+                  <div class="viewer-fog"></div>
+                  <div class="viewer-top-fog"></div>
+                </div>
+                <!-- Annotation canvas overlay -->
+                <canvas id="ann-canvas" class="ann-hidden"></canvas>
+
+                <div class="context-note-pop context-note-hidden" id="context-note-pop" aria-live="polite"></div>
+
+                <!-- Frame marker timeline — integrated inside viewer -->
+                <div class="frame-timeline" id="frame-timeline">
+                  <div class="ftl-rail"></div>
+                  <div class="ftl-playhead" id="ftl-playhead"></div>
+                  <div class="ftl-total" id="ftl-total">320fr</div>
+                </div>
+
+                <div class="viewer-controls">
+                  <button class="player-btn" title="Skip to start">
+                    <svg viewBox="0 0 24 24"><polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/></svg>
+                  </button>
+                  <button class="player-btn" title="Step back">
+                    <svg viewBox="0 0 24 24"><polygon points="11 19 2 12 11 5 11 19"/><polygon points="22 19 13 12 22 5 22 19"/></svg>
+                  </button>
+                  <button class="player-btn" title="Previous frame">
+                    <svg viewBox="0 0 24 24"><polygon points="19 20 9 12 19 4 19 20"/></svg>
+                  </button>
+                  <button class="player-btn player-btn-play" title="Play" id="main-play-btn" onclick="togglePlay(this)">
+                    <svg viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                  </button>
+                  <button class="player-btn" title="Next frame">
+                    <svg viewBox="0 0 24 24"><polygon points="5 4 15 12 5 20 5 4"/></svg>
+                  </button>
+                  <button class="player-btn" title="Skip to end">
+                    <svg viewBox="0 0 24 24"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
+                  </button>
+                  <button class="player-btn" title="Loop">
+                    <svg viewBox="0 0 24 24"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+                  </button>
+                  <div class="player-progress" id="main-progress" onclick="scrubProgress(event)">
+                    <div class="player-progress-fill" id="main-progress-fill" style="width:35%;"></div>
+                  </div>
+                  <span style="font-size:10px;color:rgba(255,255,255,0.4);white-space:nowrap;font-family:monospace;" id="main-timecode">00:08:24</span>
+                  <div style="width:1px;height:13px;background:rgba(255,255,255,0.1);flex-shrink:0;margin:0 2px;"></div>
+                  <button class="player-btn player-btn-ann" id="ann-toggle" title="Toggle annotations" onclick="AnnotationSystem.toggleOverlay()">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="12" height="12"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                    <span>Annotate</span>
+                  </button>
+                </div>
+              </div><!-- /viewer -->
+            </div><!-- /panel-overview -->
+
+            <!-- ── PANEL: NOTES ── -->
+            <div class="tab-panel" data-panel="notes" id="panel-notes">
+              <!-- Thread -->
+              <div class="cn-thread" id="cn-thread">
+                <!-- Supervisor message 1 -->
+                <div class="cn-msg cn-sup">
+                  <div class="cn-av cn-av-sup">SC</div>
+                  <div class="cn-body">
+                    <div class="cn-hdr"><span class="cn-author">Sarah Chen</span><span class="cn-role-badge cn-role-sup">Supervisor</span><span class="cn-time">2h ago</span></div>
+                    <div class="cn-txt">Please clean up the edge light spill on frame 101–105. The spill reads as a green tint — run a luma matte and apply curves.</div>
+                    <div class="cn-frame-tag" onclick="seekToFrame(101)">
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                      Frames 101–105
+                    </div>
+                  </div>
+                </div>
+                <!-- Artist reply -->
+                <div class="cn-msg cn-art">
+                  <div class="cn-av cn-av-art">AJ</div>
+                  <div class="cn-body">
+                    <div class="cn-hdr"><span class="cn-author">Alex Johnson</span><span class="cn-role-badge cn-role-art">You</span><span class="cn-time">1h ago</span></div>
+                    <div class="cn-txt">Got it — running the luma matte now. Will update v013 shortly with the spill fix.</div>
+                  </div>
+                </div>
+                <!-- Supervisor message 2 -->
+                <div class="cn-msg cn-sup">
+                  <div class="cn-av cn-av-sup">SC</div>
+                  <div class="cn-body">
+                    <div class="cn-hdr"><span class="cn-author">Sarah Chen</span><span class="cn-role-badge cn-role-sup">Supervisor</span><span class="cn-time">30m ago</span></div>
+                    <div class="cn-txt">Great, also match the contrast in the background buildings. Reference SH_0099 for the approved look.</div>
+                  </div>
+                </div>
+              </div>
+              <!-- Input -->
+              <div class="cn-input-wrap">
+                <textarea class="cn-ta" id="cn-ta" placeholder="Add a note… (Enter to send, Shift+Enter for new line)" rows="1"></textarea>
+                <div class="cn-input-footer" id="cn-input-footer">
+                  <div class="cn-tools">
+                    <button class="cn-tool" id="cn-frame-btn" title="Attach frame range" onclick="CNInput.toggleFrameRef()">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                    </button>
+                  </div>
+                  <button class="cn-send-btn" onclick="CNInput.send()">Add Note</button>
+                </div>
+                <!-- Frame ref composer -->
+                <div class="cn-frame-composer" id="cn-frame-composer">
+                  <span class="cn-frc-lbl">Frames</span>
+                  <input class="cn-frc-in" id="cn-fr-start" type="number" placeholder="101" min="1">
+                  <span style="color:var(--t3);">–</span>
+                  <input class="cn-frc-in" id="cn-fr-end" type="number" placeholder="105" min="1">
+                  <button class="cn-frc-attach" onclick="CNInput.attachFrame()">Attach</button>
+                  <button class="cn-frc-cancel" onclick="CNInput.closeFrameRef()">
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                  </button>
+                </div>
+              </div>
+            </div><!-- /panel-notes -->
+
+            <!-- ── PANEL: VERSIONS ── -->
+            <div class="tab-panel" data-panel="versions" id="panel-versions" style="overflow:hidden;">
+
+              <!-- Current version card -->
+              <div style="padding:11px 14px;border-bottom:1px solid var(--b);flex-shrink:0;">
+                <div class="cv-card">
+                  <div class="cv-top">
+                    <div style="display:flex;align-items:center;gap:8px;">
+                      <span class="cv-tag" id="cv-tag">v012</span>
+                      <span class="badge badge-working" id="cv-badge">Working</span>
+                    </div>
+                    <span class="cv-updated" id="cv-updated">Updated 2h ago</span>
+                  </div>
+                  <div class="cv-filmstrip">
+                    <div class="cv-frame"><div class="cv-frame-scene"></div></div>
+                    <div class="cv-frame"><div class="cv-frame-scene" style="background:radial-gradient(ellipse at 40% 90%,rgba(40,10,100,0.9) 0%,transparent 70%);"></div></div>
+                    <div class="cv-frame"><div class="cv-frame-scene" style="background:radial-gradient(ellipse at 60% 70%,rgba(20,40,100,0.8) 0%,transparent 70%);"></div></div>
+
+                  </div>
+                </div>
+              </div>
+
+              <!-- Version table -->
+              <div class="vfl-header">
+                <span>Version</span>
+                <span>File</span>
+                <span>Status</span>
+                <span>Date</span>
+                <span style="text-align:center;">Notes</span>
+              </div>
+              <div class="vfl-rows" id="versions-full-list-body" style="flex:1;overflow-y:auto;">
+                <!-- rendered by JS -->
+              </div>
+
+              <!-- Upload zone -->
+              <div style="padding:11px 14px;border-top:1px solid var(--b);flex-shrink:0;">
+                <div class="upload-zone" id="upload-zone">
+                  <div id="dz-idle">
+                    <div class="upload-icon-wrap"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></div>
+                    <div class="upload-text">Drag &amp; drop to upload new version</div>
+                    <div class="upload-sub">EXR · DPX · MOV · MP4 · or click to browse</div>
+                  </div>
+                  <div id="dz-uploading" style="display:none;padding:4px 0;">
+                    <div class="upload-icon-wrap" style="color:var(--purple-txt);"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="28" height="28"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></div>
+                    <div class="upload-text" style="color:var(--purple-txt);">Uploading…</div>
+                    <div class="upload-fname" id="dz-fname">filename.exr</div>
+                    <div class="upload-progress"><div class="upload-progress-fill" id="upload-progress-fill"></div></div>
+                    <div class="upload-sub" id="dz-pct-label">0%</div>
+                  </div>
+                  <div id="dz-done" style="display:none;padding:4px 0;">
+                    <div class="upload-icon-wrap" style="color:var(--green);"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="28" height="28"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></div>
+                    <div class="upload-text" style="color:var(--green);">Upload complete</div>
+                    <div class="upload-sub" style="color:var(--purple-txt);font-weight:600;" id="dz-done-tag"></div>
+                    <div class="upload-fname" id="dz-done-name"></div>
+                  </div>
+                  <div class="dz-over-text">Drop to create new version</div>
+                </div>
+                <input type="file" id="version-file-input" accept=".exr,.dpx,.mov,.mp4,.png,.tiff,.jpg" style="display:none;">
+              </div>
+            </div><!-- /panel-versions -->
+
+            <!-- ── PANEL: INFO (shot metadata) ── -->
+            <div class="tab-panel" data-panel="info" id="panel-info">
+              <div class="info-wrap">
+                <div class="info-section">
+                  <div class="info-section-lbl">Shot Info</div>
+                  <div class="info-table">
+                    <div class="info-tr"><span class="info-key">Shot ID</span><span class="info-val">SH_0100</span></div>
+                    <div class="info-tr"><span class="info-key">Shot Name</span><span class="info-val">SH_0100_comp_v012</span></div>
+                    <div class="info-tr"><span class="info-key">Sequence</span><span class="info-val">SEQ_0100</span></div>
+                    <div class="info-tr"><span class="info-key">Episode</span><span class="info-val">EP01 — Driftworks</span></div>
+                    <div class="info-tr"><span class="info-key">Shot Type</span><span class="info-val">Full CG</span></div>
+                    <div class="info-tr"><span class="info-key">Frame Range</span><span class="info-val">101 – 110 (10 frames)</span></div>
+                    <div class="info-tr"><span class="info-key">Frame Rate</span><span class="info-val">24 fps</span></div>
+                    <div class="info-tr"><span class="info-key">Resolution</span><span class="info-val">4096 × 2160 (4K)</span></div>
+                    <div class="info-tr"><span class="info-key">Color Space</span><span class="info-val">ACES / ACEScg</span></div>
+                    <div class="info-tr"><span class="info-key">Shot Type</span><span class="info-val">Full CG</span></div>
+                    <div class="info-tr"><span class="info-key">Sequence</span><span class="info-val">0100</span></div>
+                  </div>
+                </div>
+                <div class="info-section">
+                  <div class="info-section-lbl">Assignment</div>
+                  <div class="info-table">
+                    <div class="info-tr"><span class="info-key">Department</span><span class="info-val">Compositing</span></div>
+                    <div class="info-tr"><span class="info-key">Task</span><span class="info-val">Main Comp</span></div>
+                    <div class="info-tr"><span class="info-key">Assigned To</span><span class="info-val">Alex Johnson</span></div>
+                    <div class="info-tr"><span class="info-key">Assigned By</span><span class="info-val">Sarah (Supervisor)</span></div>
+                    <div class="info-tr"><span class="info-key">Due Date</span><span class="info-val">20 May 2024, 6:00 PM</span></div>
+                    <div class="info-tr"><span class="info-key">Priority</span><span class="info-val" style="color:var(--amber);">High</span></div>
+                    <div class="info-tr"><span class="info-key">Status</span><span class="info-val"><span class="badge badge-ip" style="width:fit-content;" id="task-status-badge">In Progress</span></span></div>
+                    <div class="info-tr"><span class="info-key">Status</span><span class="info-val"><span class="badge badge-ip">In Progress</span></span></div>
+                  </div>
+                </div>
+                <div class="info-section">
+                  <div class="info-section-lbl">Pipeline</div>
+                  <div class="info-table">
+                    <div class="info-tr"><span class="info-key">Software</span><span class="info-val">Nuke 15.1 / Maya 2025</span></div>
+                    <div class="info-tr"><span class="info-key">Renderer</span><span class="info-val">Arnold 7.3</span></div>
+                    <div class="info-tr"><span class="info-key">Render Layer</span><span class="info-val">beauty, spec, diff, shadow</span></div>
+                    <div class="info-tr"><span class="info-key">Output Format</span><span class="info-val">OpenEXR 32-bit</span></div>
+                    <div class="info-tr"><span class="info-key">Current Version</span><span class="info-val" id="info-cv-tag" style="color:var(--purple-txt);font-weight:600;">v012</span></div>
+                    <div class="info-tr"><span class="info-key">Total Versions</span><span class="info-val" id="info-total-v">6</span></div>
+                  </div>
+                </div>
+              </div>
+            </div><!-- /panel-info -->
+
+          </div><!-- /task-detail -->
+
+        </div><!-- /col-center -->
+
+        <!-- ─── RIGHT: Notes + Submit ─── -->
+        <div class="col-right">
+
+          <!-- Submit panel -->
+          <div class="submit-panel" id="submit-panel">
+
+            <!-- ─── FORM STATE ─── -->
+            <div id="submit-form-wrap">
+              <div class="submit-title">Submit for Review</div>
+
+              <!-- Version select -->
+              <div>
+                <label class="form-lbl" for="submit-version-select">Select Version</label>
+                <select class="version-select" id="submit-version-select"
+                  onchange="SubmitFlow.onVersionChange()">
+                  <!-- populated by VersionStore via Render.submitDropdown() -->
+                  <option value="v012">v012 (Working)</option>
+                </select>
+              </div>
+
+              <!-- Note field -->
+              <div>
+                <label class="form-lbl" for="submit-note">Notes for supervisor <span style="font-weight:400;font-size:10px;">(optional)</span></label>
+                <textarea class="notes-textarea" id="submit-note"
+                  placeholder="What changed in this version? What needs attention?…"
+                  oninput="SubmitFlow.onNoteInput(this)">Please review the latest version. Cleaned up the edge spill as requested. Thanks!</textarea>
+                <div class="sf-hint" id="sf-hint"></div>
+              </div>
+
+              <!-- Notify checkbox -->
+              <div class="notify-row" id="notify-row" onclick="SubmitFlow.toggleNotify()">
+                <div class="notify-chk" id="notify-chk">
+                  <svg viewBox="0 0 12 12"><polyline points="1.5 6 4.5 9 10.5 3"/></svg>
+                </div>
+                <span class="notify-lbl">Notify Supervisor</span>
+                <span style="margin-left:auto;font-size:11px;color:var(--t2);" id="notify-who">Sarah Chen</span>
+              </div>
+
+              <!-- Submit button -->
+              <button class="submit-btn" id="submit-btn"
+                onclick="FlowManager.submitCurrentTask()">
+                Submit for Review
+              </button>
+
+              <!-- Ready hint -->
+              <div class="ready-card" id="ready-card">
+                <div class="ready-icon">
+                  <svg viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/>
+                    <polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                </div>
+                <div class="ready-title">Ready to submit?</div>
+                <div class="ready-sub">Once submitted, the task will move to
+                  <strong style="color:var(--purple-txt);">"In Review"</strong>
+                  and the supervisor will be notified.
+                </div>
+              </div>
+            </div><!-- /submit-form-wrap -->
+
+            <!-- ─── CONFIRMATION STATE (hidden initially) ─── -->
+            <div id="submit-confirm-wrap" class="submit-confirm-wrap">
+
+              <!-- Big success icon -->
+              <div class="sc-icon-row">
+                <div class="sc-icon">
+                  <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+                </div>
+              </div>
+
+              <!-- Headline -->
+              <div class="sc-headline">Submitted for Review</div>
+              <div class="sc-subline" id="sc-shot-line">SH_0100_comp_v012</div>
+
+              <!-- Pills -->
+              <div class="sc-pills">
+                <span class="sc-ver-pill" id="sc-ver-pill">v012</span>
+                <span class="sc-time-pill" id="sc-time-pill">Just now</span>
+              </div>
+
+              <!-- Details card -->
+              <div class="sc-detail">
+                <div class="sc-detail-row">
+                  <span class="sc-detail-key">Status</span>
+                  <span class="sc-detail-val sv-green">In Review</span>
+                </div>
+                <div class="sc-detail-row">
+                  <span class="sc-detail-key">Supervisor</span>
+                  <span class="sc-detail-val" id="sc-sup-row">—</span>
+                </div>
+                <div class="sc-detail-row">
+                  <span class="sc-detail-key">Notified</span>
+                  <span class="sc-detail-val sv-amber" id="sc-notified-row">—</span>
+                </div>
+                <div class="sc-detail-row">
+                  <span class="sc-detail-key">Note attached</span>
+                  <span class="sc-detail-val" id="sc-note-row">—</span>
+                </div>
+              </div>
+
+              <!-- Undo -->
+              <div class="sc-undo-wrap">
+                <button class="sc-undo-btn" id="sc-undo-btn" onclick="SubmitFlow.undo()">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2.2" stroke-linecap="round"
+                    stroke-linejoin="round">
+                    <polyline points="1 4 1 10 7 10"/>
+                    <path d="M3.51 15a9 9 0 1 0 .49-3.51"/>
+                  </svg>
+                  Undo submission
+                  <span class="sc-undo-count" id="sc-undo-count">8</span>
+                </button>
+              </div>
+
+              <!-- Re-submit link -->
+              <div class="sc-resubmit" id="sc-resubmit" onclick="SubmitFlow.reset()">
+                + Submit another version
+              </div>
+
+            </div><!-- /submit-confirm-wrap -->
+
+          </div>
+        </div>
+
+      </div><!-- /cols -->
+
+
+    </div><!-- /main -->
+  </div><!-- /body-wrap -->
+</div><!-- /app -->
+</template>
+
+<!-- ══════════════ SUPERVISOR APP (SEPARATE ROOT) ══════════════ -->
+<template id="supervisor-app-template">
+<div id="supervisor-app" class="app supervisor-app" aria-label="Supervisor dashboard">
+  <aside class="sv-sidebar">
+    <div class="sv-brand">
+      <img class="sv-brand-logo" src="images/assets/frameshift-logo.png" alt="Frameshift" />
+    </div>
+    <nav class="sv-nav">
+      <button class="sv-nav-item active">
+        <span class="sv-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7"></rect><rect x="13" y="4" width="7" height="4"></rect><rect x="13" y="10" width="7" height="10"></rect><rect x="4" y="13" width="7" height="7"></rect></svg></span>
+        <span class="sv-nav-label">Dashboard</span>
+      </button>
+      <button class="sv-nav-item">
+        <span class="sv-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 6h16v4H4z"></path><path d="M4 14h10v4H4z"></path><path d="M17 14h3v4h-3z"></path></svg></span>
+        <span class="sv-nav-label">Review Queue</span>
+        <span class="sv-pill">12</span>
+      </button>
+      <button class="sv-nav-item">
+        <span class="sv-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 8.5 7.5 4h9L21 8.5v8.8a1.7 1.7 0 0 1-1.7 1.7H4.7A1.7 1.7 0 0 1 3 17.3z"></path><path d="M7 12h10"></path></svg></span>
+        <span class="sv-nav-label">Shots</span>
+      </button>
+      <button class="sv-nav-item">
+        <span class="sv-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 4h9l3 3v13H6z"></path><path d="M15 4v3h3"></path><path d="M9 12h6"></path><path d="M9 16h6"></path></svg></span>
+        <span class="sv-nav-label">Versions</span>
+      </button>
+      <button class="sv-nav-item">
+        <span class="sv-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 6h16v10H8l-4 4z"></path></svg></span>
+        <span class="sv-nav-label">Notes</span>
+      </button>
+      <button class="sv-nav-item">
+        <span class="sv-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="8" cy="9" r="3"></circle><circle cx="16" cy="9" r="3"></circle><path d="M3 19c1-2.5 3.2-4 5-4s4 1.5 5 4"></path><path d="M11 19c1-2.2 3-3.5 5-3.5 1.8 0 3.7 1.3 5 3.5"></path></svg></span>
+        <span class="sv-nav-label">Teams</span>
+      </button>
+    </nav>
+    <div class="sv-side-foot">
+      <button class="sv-nav-item">
+        <span class="sv-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1a7 7 0 0 0-1.8-1l-.3-2.5h-4l-.3 2.5a7 7 0 0 0-1.8 1l-2.4-1-2 3.4 2 1.5a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.4-1a7 7 0 0 0 1.8 1l.3 2.5h4l.3-2.5a7 7 0 0 0 1.8-1l2.4 1 2-3.4-2-1.5c.1-.3.1-.7.1-1z"></path></svg></span>
+        <span class="sv-nav-label">Settings</span>
+      </button>
+      <button class="sv-collapse">
+        <span class="sv-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m14 6-6 6 6 6"></path></svg></span>
+        <span class="sv-nav-label">Collapse</span>
+      </button>
+      <button class="sv-dept-pill">FX Department <span>Change</span></button>
+    </div>
+  </aside>
+
+  <section class="sv-main">
+    <header class="sv-topbar">
+      <div class="sv-project">
+        <span>PROJECT</span>
+        <select id="sv-project-switcher" onchange="SupervisorDashboard.setProject(this.value)">
+          <option value="all">All Projects</option>
+          <option value="Echo Point">Echo Point</option>
+          <option value="Nova">Nova</option>
+          <option value="Atlas">Atlas</option>
+        </select>
+      </div>
+      <div class="sv-search-wrap">
+        <input class="sv-search" placeholder="Search shots, tasks, versions..." />
+      </div>
+      <div class="sv-head-actions">
+        <button class="sv-insights-btn" onclick="SupervisorInsights.toggle()">Insights ⚡</button>
+        <div class="sv-user-chip" onclick="SupervisorUserMenu.toggle(event)">
+          <button class="sv-user-avatar" id="sv-user-avatar-btn" onclick="event.stopPropagation();SupervisorUserMenu.toggle(event)">
+            <img id="sv-user-avatar" alt="Supervisor profile" />
+          </button>
+          <div class="sv-user">
+            <span id="sv-user-name">Sarah Connor</span><small id="sv-user-role">FX Supervisor</small>
+          </div>
+          <svg class="sv-user-chevron" viewBox="0 0 24 24" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+          <div class="sv-user-menu" id="sv-user-menu">
+            <button onclick="SupervisorUserMenu.profile(event)">Profile Settings</button>
+            <button onclick="SupervisorUserMenu.notifications(event)">Notifications</button>
+            <button onclick="SupervisorUserMenu.preferences(event)">Preferences</button>
+            <button onclick="SupervisorUserMenu.uploadAvatar(event)">Upload Profile Picture</button>
+            <input type="file" accept="image/*" id="sv-user-avatar-upload" style="display:none" onchange="SupervisorUserMenu.onAvatarSelected(event)" />
+            <button onclick="SupervisorUserMenu.setRole(event,'artist')">Switch to Artist (Prototype)</button>
+            <button onclick="SupervisorUserMenu.signOut(event)">Sign Out</button>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <div class="sv-content">
+      <div class="sv-layout">
+      <div class="sv-container">
+      <div class="dashboard">
+      <div class="dashboard-inner">
+      <div id="sv-project-dashboard">
+      <div class="dashboard-header">
+        <div class="sv-heading-row">
+          <div>
+            <h1>FX Supervisor Overview — Echo Point</h1>
+            <p>Pipeline status and critical simulation decisions.</p>
+          </div>
+          <div class="sv-updated">Last updated: 2m ago</div>
+        </div>
+      </div>
+
+      <div class="dashboard-section sv-section">
+      <div class="sv-kpis summary-row dashboard-kpis">
+          <article class="sv-kpi card sv-needs" id="sv-kpi-card-needs">
+            <span class="sv-kpi-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M3 8.5 7.5 4h9L21 8.5v8.8a1.7 1.7 0 0 1-1.7 1.7H4.7A1.7 1.7 0 0 1 3 17.3z"></path>
+                <path d="M7 12h10"></path>
+              </svg>
+            </span>
+            <h3>NEEDS REVIEW</h3><strong id="sv-kpi-needs">12</strong><em>shots ready</em>
+          </article>
+          <article class="sv-kpi card sv-inreview" id="sv-kpi-card-running">
+            <span class="sv-kpi-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="12" cy="12" r="8"></circle>
+                <path d="M12 8v4l2.8 1.6"></path>
+              </svg>
+            </span>
+            <h3>SIM RUNNING</h3><strong id="sv-kpi-running">8</strong><em>currently processing</em>
+          </article>
+          <article class="sv-kpi card sv-cache" id="sv-kpi-card-cache">
+            <span class="sv-kpi-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 7h16"></path>
+                <path d="M4 12h16"></path>
+                <path d="M4 17h16"></path>
+              </svg>
+            </span>
+            <h3>CACHE READY</h3><strong id="sv-kpi-cache">11</strong><em>waiting supervisor</em>
+          </article>
+          <article class="sv-kpi card sv-revise" id="sv-kpi-card-revise">
+            <span class="sv-kpi-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M20 12a8 8 0 1 1-2.5-5.8"></path>
+                <path d="M20 4v5h-5"></path>
+              </svg>
+            </span>
+            <h3>REVISE</h3><strong id="sv-kpi-revise">7</strong><em>needs adjustments</em>
+          </article>
+          <article class="sv-kpi card sv-approved" id="sv-kpi-card-approved">
+            <span class="sv-kpi-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="12" cy="12" r="8"></circle>
+                <path d="m8.5 12 2.3 2.3L15.8 9.5"></path>
+              </svg>
+            </span>
+            <h3>APPROVED</h3><strong id="sv-kpi-approved">24</strong><em>approved shots</em>
+          </article>
+          <article class="sv-kpi card sv-failed" id="sv-kpi-card-failed">
+            <span class="sv-kpi-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 4 21 19H3L12 4z"></path>
+                <path d="M12 10v4"></path>
+                <circle cx="12" cy="16.8" r=".7"></circle>
+              </svg>
+            </span>
+            <h3>FAILED SIMS</h3><strong id="sv-kpi-failed">3</strong><em>requires action</em>
+          </article>
+        </div>
+      </div>
+
+      <div class="dashboard-section sv-section">
+        <section class="sv-card sv-insights-strip full-width">
+          <div class="sv-card-title">Supervisor Insights</div>
+          <div class="sv-insight-list sv-insights dashboard-insights" id="sv-insight-list"></div>
+        </section>
+      </div>
+
+      <div class="sv-layer sv-layer-decision dashboard-layer-1">
+        <div class="dashboard-section">
+          <section class="sv-card sv-decision-card full-width">
+            <div class="sv-card-title">🔥 Immediate Attention <button class="sv-link sv-card-link" id="sv-immediate-viewall">View all</button></div>
+            <div class="sv-list sv-alert-list" id="sv-immediate-list">
+            </div>
+            <button class="sv-link" onclick="SupervisorDashboard.applyQueueFilter('immediate')">Open immediate attention queue</button>
+          </section>
+        </div>
+      </div>
+
+      <div class="sv-layer sv-layer-operations dashboard-layer-2">
+        <div class="dashboard-section sv-section">
+          <div class="sv-layer-ops-top sv-main-grid dashboard-grid-2">
+            <div class="dashboard-stack sv-left">
+              <section class="sv-card">
+                <div class="sv-card-title">Simulation Health <button class="sv-link sv-card-link">View all shots</button></div>
+                <div class="sv-list" id="sv-sim-health-list">
+                </div>
+                <p class="sv-insight">Most delays are currently in Sim Running (8 shots).</p>
+                <button class="sv-link" onclick="SupervisorDashboard.applyQueueFilter('failed')">View failed simulation shots</button>
+              </section>
+
+              <section class="sv-card sv-workflow-card">
+                <div class="sv-card-title">Needs Review <button class="sv-link sv-card-link" onclick="SupervisorDashboard.applyQueueFilter('needs-review')">View all</button></div>
+                <div class="sv-list sv-bucket-list" id="sv-bucket-needs-list"></div>
+              </section>
+            </div>
+
+            <div class="dashboard-stack sv-right">
+              <section class="sv-card">
+                <div class="sv-card-title">Review Workload</div>
+                <div class="sv-list sv-workload-list" id="sv-review-workload-list"></div>
+              </section>
+
+              <section class="sv-card sv-workflow-card">
+                <div class="sv-card-title">In Review <button class="sv-link sv-card-link" onclick="SupervisorDashboard.applyQueueFilter('high-priority')">View all</button></div>
+                <div class="sv-list sv-bucket-list" id="sv-bucket-review-list"></div>
+              </section>
+
+              <section class="sv-card sv-workflow-card sv-context-muted">
+                <div class="sv-card-title">Recently Approved <button class="sv-link sv-card-link" onclick="SupervisorDashboard.applyQueueFilter('approved')">View all</button></div>
+                <div class="sv-list sv-bucket-list" id="sv-bucket-approved-list"></div>
+              </section>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sv-layer sv-layer-context dashboard-layer-3">
+        <div class="dashboard-section">
+          <div class="sv-layer-grid sv-layer-grid-context dashboard-grid-3">
+            <section class="sv-card">
+              <div class="sv-card-title">Upcoming Deadlines</div>
+              <div class="sv-list sv-deadline-list" id="sv-upcoming-deadlines-list"></div>
+            </section>
+
+            <section class="sv-card">
+              <div class="sv-card-title">Critical Events
+                <span class="sv-title-actions">
+                  <button class="sv-mini-pill active" id="sv-act-filter-all" onclick="SupervisorDashboard.setActivityFilter('all')">All</button>
+                  <button class="sv-mini-pill" id="sv-act-filter-errors" onclick="SupervisorDashboard.setActivityFilter('errors')">Errors</button>
+                  <button class="sv-mini-pill" id="sv-act-filter-approvals" onclick="SupervisorDashboard.setActivityFilter('approvals')">Approvals</button>
+                  <button class="sv-mini-pill" id="sv-act-filter-assignments" onclick="SupervisorDashboard.setActivityFilter('assignments')">Assignments</button>
+                </span>
+              </div>
+              <div class="sv-list sv-activity" id="sv-activity-list">
+              </div>
+            </section>
+
+            <section class="sv-card sv-workflow-card sv-context-muted">
+              <div class="sv-card-title">Recently Approved <button class="sv-link sv-card-link" onclick="SupervisorDashboard.applyQueueFilter('approved')">View all</button></div>
+              <div class="sv-list sv-bucket-list" id="sv-bucket-approved-context-list"></div>
+            </section>
+          </div>
+        </div>
+      </div>
+
+      <div class="dashboard-section sv-section">
+        <section class="sv-card sv-project-cta-wrap">
+          <p class="sv-project-cta-helper"><strong>3 items need your attention</strong><span>1 critical • 2 high</span></p>
+          <button class="sv-primary" id="sv-project-cta-btn" onclick="SupervisorDashboard.goToReviewQueue()">Open Attention Hub</button>
+          <button class="sv-secondary" id="sv-project-cta-secondary" onclick="SupervisorDashboard.applyQueueFilter('all')">View all (3)</button>
+        </section>
+      </div>
+
+      <div class="sv-command-palette" id="sv-command-palette">
+        <div class="sv-command-backdrop" onclick="SupervisorDashboardPalette.close()"></div>
+        <div class="sv-command-panel">
+          <input id="sv-command-input" class="sv-command-input" placeholder="Search shots, artists, sims..." oninput="SupervisorDashboardPalette.search(this.value)" onkeydown="SupervisorDashboardPalette.keynav(event)" />
+          <div class="sv-command-results" id="sv-command-results"></div>
+        </div>
+      </div>
+
+      </div>
+      </div>
+      </div>
+      </div>
+      </div>
+
+      <div id="sv-global-dashboard" style="display:none;">
+        <div class="dashboard-header">
+          <div class="sv-heading-row">
+            <div>
+              <h1>Global FX Supervisor Overview</h1>
+              <p>Cross-project pipeline health and critical triage.</p>
+            </div>
+            <div class="sv-updated">Last updated: 2m ago</div>
+          </div>
+        </div>
+
+        <div class="dashboard-section">
+          <div class="sv-kpis sv-global-kpis summary-row">
+            <article class="sv-kpi card sv-needs">
+              <span class="sv-kpi-icon">
+                <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+                  <circle cx="10" cy="10" r="8"></circle><path d="M6 10h8"></path>
+                </svg>
+              </span>
+              <h3>NEEDS REVIEW</h3><strong id="sv-global-needs">0</strong><em id="sv-global-needs-sub">all projects</em>
+            </article>
+            <article class="sv-kpi card sv-inreview">
+              <span class="sv-kpi-icon">
+                <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+                  <path d="M10 2v6l4 2"></path>
+                </svg>
+              </span>
+              <h3>SIM RUNNING</h3><strong id="sv-global-running">0</strong><em id="sv-global-running-sub">all projects</em>
+            </article>
+            <article class="sv-kpi card sv-cache">
+              <span class="sv-kpi-icon">
+                <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+                  <path d="M4 10h12M4 6h12M4 14h12"></path>
+                </svg>
+              </span>
+              <h3>CACHE READY</h3><strong id="sv-global-cache">0</strong><em id="sv-global-cache-sub">all projects</em>
+            </article>
+            <article class="sv-kpi card sv-failed">
+              <span class="sv-kpi-icon">
+                <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+                  <path d="M6 6l8 8M14 6l-8 8"></path>
+                </svg>
+              </span>
+              <h3>FAILED SIMS</h3><strong id="sv-global-failed">0</strong><em id="sv-global-failed-sub">all projects</em>
+            </article>
+            <article class="sv-kpi card sv-overdue">
+              <span class="sv-kpi-icon">
+                <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+                  <circle cx="10" cy="10" r="8"></circle><path d="M10 6v4l2 2"></path>
+                </svg>
+              </span>
+              <h3>OVERDUE</h3><strong id="sv-global-overdue">0</strong><em id="sv-global-overdue-sub">all projects</em>
+            </article>
+          </div>
+        </div>
+
+        <div class="dashboard-section">
+          <div class="sv-grid dashboard-grid">
+            <section class="sv-card">
+              <div class="sv-card-title">Immediate Attention <button class="sv-link sv-card-link">View all</button></div>
+              <div class="sv-list sv-alert-list" id="sv-global-immediate-list"></div>
+            </section>
+            <section class="sv-card">
+              <div class="sv-card-title">Pipeline Health by Project <button class="sv-link sv-card-link">View all</button></div>
+              <div class="sv-list sv-rows sv-proj-pipe" id="sv-global-project-pipeline"></div>
+            </section>
+            <section class="sv-card">
+              <div class="sv-card-title">Recent Activity <button class="sv-link sv-card-link">View all</button></div>
+              <div class="sv-list sv-activity" id="sv-global-activity"></div>
+            </section>
+          </div>
+        </div>
+
+        <div class="dashboard-section">
+          <div class="sv-grid bottom-grid">
+            <section class="sv-card">
+              <div class="sv-card-title">Quick Actions</div>
+              <div class="sv-list sv-global-actions" id="sv-global-actions"></div>
+            </section>
+            <section class="sv-card">
+              <div class="sv-card-title">Recently Updated Shots <button class="sv-link sv-card-link">View all shots</button></div>
+              <div class="sv-list sv-rows" id="sv-global-updated"></div>
+            </section>
+            <section class="sv-card sv-global-status-card">
+              <div class="sv-card-title">Pipeline Status (All Projects)</div>
+              <div class="sv-list sv-rows" id="sv-global-status-list"></div>
+            </section>
+          </div>
+        </div>
+
+        <div class="dashboard-section">
+          <section class="sv-card sv-global-cta-wrap">
+            <p class="sv-global-cta-helper">Start reviewing critical shots across all projects</p>
+            <button class="sv-primary sv-global-cta" onclick="SupervisorDashboard.goToGlobalReviewQueue()">Go to Global Review Queue</button>
+            <p><strong>Failed Sims:</strong> <span id="sv-global-stat-failed">0</span> · <strong>Blocked:</strong> <span id="sv-global-stat-blocked">0</span> · <strong>Needs Review:</strong> <span id="sv-global-stat-needs">0</span></p>
+          </section>
+        </div>
+      </div>
+    </div>
+
+    <aside class="sv-insights-panel" id="sv-insights-panel" aria-label="Insights panel">
+      <div class="sv-insights-head">
+        <strong>Insights</strong>
+        <div class="sv-insights-actions">
+          <button onclick="SupervisorInsights.collapse()" id="sv-insights-collapse">Collapse</button>
+          <button onclick="SupervisorInsights.close()">Close</button>
+        </div>
+      </div>
+      <div class="sv-insights-body" id="sv-insights-body">
+        <section>
+          <h4>Detected Issues</h4>
+          <ul id="sv-insights-issues"></ul>
+        </section>
+        <section>
+          <h4>Suggested Actions</h4>
+          <ul id="sv-insights-actions-list"></ul>
+        </section>
+        <section>
+          <h4>Notes</h4>
+          <p id="sv-insights-notes"></p>
+        </section>
+      </div>
+    </aside>
+  </section>
+</div>
+
+<div id="sv-queue-modal" style="display:none;">
+  <div class="sv-queue-backdrop" onclick="SupervisorDashboard.closeQueue()"></div>
+  <div class="sv-queue-panel">
+    <div class="sv-queue-head">
+      <strong>Review Queue</strong>
+      <button class="sv-queue-close" onclick="SupervisorDashboard.closeQueue()">Close</button>
+    </div>
+    <div class="sv-queue-table-wrap">
+      <table class="sv-queue-table">
+        <thead>
+          <tr><th>Project</th><th>Shot</th><th>FX Type</th><th>Status</th><th>Priority</th></tr>
+        </thead>
+        <tbody id="sv-queue-body"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══ REVIEW MODE OVERLAY ═══ -->
+<div id="rm-overlay">
+  <div id="rm-header">
+    <span class="rm-shot-label">SH_0100_comp_v012</span>
+    <span class="rm-sep">·</span>
+    <span style="font-size:10.5px;color:var(--t3);" id="rm-ver-label">v012</span>
+    <div class="rm-spacer"></div>
+    <button class="rm-pf-btn" id="rm-pf-btn" onclick="ReviewMode.togglePlayFeedback()">
+      <svg viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+      Play Feedback
+    </button>
+    <button class="rm-exit-btn" onclick="ReviewMode.exit()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      Exit Review
+    </button>
+  </div>
+  <div id="rm-body">
+    <div id="rm-viewer-wrap">
+      <div id="rm-scene">
+        <div class="viewer-bg" style="position:absolute;inset:0;"></div>
+        <div class="viewer-stars" style="position:absolute;inset:0;"></div>
+        <div class="viewer-structure" style="position:absolute;inset:0;"></div>
+        <div class="viewer-glow" style="position:absolute;inset:0;"></div>
+        <div class="viewer-figure" style="position:absolute;inset:0;"></div>
+        <div class="viewer-fog" style="position:absolute;inset:0;"></div>
+        <div class="viewer-top-fog" style="position:absolute;inset:0;"></div>
+      </div>
+      <canvas id="rm-canvas" class="hidden"></canvas>
+      <div class="rm-rate-flash" id="rm-rate-flash"></div>
+      <div id="rm-timeline">
+        <div id="rm-tl-rail"></div>
+        <div id="rm-tl-playhead"></div>
+      </div>
+      <div id="rm-controls">
+        <button class="rm-ctrl-btn" onclick="ReviewMode.seek(0)" title="Start">
+          <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="19 20 9 12 19 4 19 20"/><rect x="4" y="4" width="3" height="16" rx="1"/></svg>
+        </button>
+        <button class="rm-ctrl-btn" onclick="ReviewMode.stepFrame(-1)" title="Prev frame">
+          <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="19 20 9 12 19 4 19 20"/></svg>
+        </button>
+        <button class="rm-ctrl-btn rm-ctrl-btn-play" id="rm-play-btn" onclick="ReviewMode.togglePlay()">
+          <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+        </button>
+        <button class="rm-ctrl-btn" onclick="ReviewMode.stepFrame(1)" title="Next frame">
+          <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="5 4 15 12 5 20 5 4"/></svg>
+        </button>
+        <div id="rm-progress" onclick="ReviewMode.scrub(event)">
+          <div id="rm-progress-fill"></div>
+        </div>
+        <span id="rm-timecode">00:00:00</span>
+        <div class="rm-ctrl-div"></div>
+        <button class="rm-ctrl-btn rm-ann-btn" id="rm-ann-btn" title="Annotations" onclick="ReviewMode.toggleAnnotations()">
+          <svg viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
+      </div>
+      <div id="rm-keys">
+        <div class="rm-key-item"><span class="rm-key">J</span>Back</div>
+        <div class="rm-key-item"><span class="rm-key">K</span>Pause/Play</div>
+        <div class="rm-key-item"><span class="rm-key">L</span>Play</div>
+        <div class="rm-key-item"><span class="rm-key">← →</span>Step frame</div>
+        <div class="rm-key-item"><span class="rm-key">N</span>Next note</div>
+        <div class="rm-key-item"><span class="rm-key">Esc</span>Exit</div>
+      </div>
+    </div>
+    <div id="rm-notes-panel">
+      <div id="rm-notes-hdr">
+        <span class="rm-notes-title">Feedback</span>
+        <span id="rm-frame-badge">fr —</span>
+      </div>
+      <div id="rm-notes-list">
+        <div class="rm-empty-msg">Seek to a frame with annotations</div>
+      </div>
+      <div id="rm-notes-next-btn">
+        <button class="rm-nav-btn" onclick="ReviewMode.prevAnnotation()">
+          <svg viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>Prev
+        </button>
+        <button class="rm-nav-btn" onclick="ReviewMode.nextAnnotation()">
+          Next<svg viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+</template>
+</body>
+</html>
