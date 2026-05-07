@@ -4,10 +4,15 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Frameshift — Artist Dashboard</title>
+<script>
+  const allowDashboard = new URLSearchParams(window.location.search).get("fromLogin") === "1";
+  if (!allowDashboard) window.location.replace("./pages/auth/login.html");
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800&display=swap" rel="stylesheet">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="./styles.css">
+<link rel="stylesheet" href="./review-workspace.css">
 <script src="./app.js" defer></script>
 <script src="./reviewEngine.js" defer></script>
 </head>
@@ -17,103 +22,74 @@
 <template id="artist-app-template">
 <div class="app artist-app">
 
-  <!-- ══════════════ TOP BAR ══════════════ -->
-  <header class="topbar">
-    <!-- Logo -->
-    <a class="logo" href="#">
-      <div class="logo-mark">
-        <!-- FS icon: two overlapping rectangles -->
-        <svg viewBox="0 0 18 18" fill="white"><rect x="1" y="5" width="7" height="10" rx="1.2"/><rect x="9" y="1" width="8" height="14" rx="1.2" opacity="0.7"/></svg>
-      </div>
-      <span class="logo-name">FRAMESHIFT</span>
-    </a>
-
-    <!-- Hamburger -->
-    <button class="tb-hamburger" aria-label="Menu">
-      <span></span><span></span><span></span>
-    </button>
-
-    <!-- Project pill -->
-    <div class="project-pill">
-      Fire Temple
-      <svg viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
-    </div>
-
-    <!-- Search -->
-    <div class="search-bar">
-      <svg class="search-icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><line x1="24" y1="24" x2="16.65" y2="16.65"/></svg>
-      <input type="text" placeholder="Search shots, tasks…">
-      <span class="search-kbd">⌘K</span>
-    </div>
-
-    <!-- Right icons -->
-    <div class="tb-right">
-      <button class="tb-icon" aria-label="Mail">
-        <svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><polyline points="2,4 12,13 22,4"/></svg>
-      </button>
-      <button class="tb-icon" aria-label="Notifications">
-        <svg viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
-        <span class="notif-badge">5</span>
-      </button>
-      <button class="tb-icon" aria-label="Help">
-        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-      </button>
-      <div class="user-chip" onclick="UserMenu.toggle(event)">
-        <div class="user-av">AJ</div>
-        <div class="user-info">
-          <div class="user-name">Alex Chen</div>
-          <div class="user-role">FX Artist</div>
-        </div>
-        <svg class="user-menu-chevron" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
-        <div class="user-menu" id="user-menu">
-          <button onclick="UserMenu.profile(event)">View Profile</button>
-          <button onclick="UserMenu.setRole(event,'artist')">Switch to Artist</button>
-          <button onclick="UserMenu.setRole(event,'supervisor')">Switch to Supervisor</button>
-          <button onclick="UserMenu.signOut(event)">Sign Out</button>
-        </div>
-      </div>
-    </div>
-  </header>
-
   <!-- ══════════════ BODY ══════════════ -->
   <div class="body-wrap">
 
-    <!-- ── SIDEBAR ── -->
-    <nav class="sidebar">
-      <div class="sidebar-nav">
-        <a class="nav-item active artist-only" id="nav-dashboard" href="#" onclick="event.preventDefault();switchTab('dashboard')">
-          <svg viewBox="0 0 24 24"><path d="M3 13h8V3H3v10z"/><path d="M13 21h8V11h-8v10z"/><path d="M13 3v6h8V3h-8z"/><path d="M3 21h8v-6H3v6z"/></svg>
-          Dashboard
-        </a>
-        <a class="nav-item artist-only" id="nav-tasks" href="#" onclick="event.preventDefault();switchTab('overview')">
-          <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
-          My Tasks
-        </a>
-        <a class="nav-item artist-only" id="nav-versions" href="#" onclick="event.preventDefault();switchTab('versions')">
-          <svg viewBox="0 0 24 24"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2,17 12,22 22,17"/><polyline points="2,12 12,17 22,12"/></svg>
-          Versions
-        </a>
-        <a class="nav-item artist-only" id="nav-notes" href="#" onclick="event.preventDefault();switchTab('notes')">
-          <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-          Notes
-        </a>
-        <div class="sidebar-spacer"></div>
+    <!-- ── SIDEBAR (Supervisor shell style + Artist labels) ── -->
+    <aside class="sv-sidebar sidebar">
+      <div class="sv-brand">
+        <img class="sv-brand-logo" src="images/assets/frameshift-logo.png" alt="Frameshift" />
       </div>
-
-      <div class="sidebar-bottom">
-        <a class="nav-item" href="#">
-          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M16.24 7.76a6 6 0 0 1 0 8.49M4.93 19.07a10 10 0 0 1 0-14.14M7.76 16.24a6 6 0 0 1 0-8.49"/></svg>
-          Settings
-        </a>
-        <a class="nav-item" href="#">
-          <svg viewBox="0 0 24 24"><polyline points="11 17 6 12 11 7"/><polyline points="18 17 13 12 18 7"/></svg>
-          Collapse
-        </a>
+      <nav class="sv-nav">
+        <button class="sv-nav-item active" data-role="artist" id="nav-dashboard" onclick="event.preventDefault();switchTab('dashboard')">
+          <span class="sv-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7"></rect><rect x="13" y="4" width="7" height="4"></rect><rect x="13" y="10" width="7" height="10"></rect><rect x="4" y="13" width="7" height="7"></rect></svg></span>
+          <span class="sv-nav-label">Dashboard</span>
+        </button>
+        <button class="sv-nav-item" data-role="artist" id="nav-tasks" onclick="event.preventDefault();switchTab('overview')">
+          <span class="sv-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 6h16v4H4z"></path><path d="M4 14h10v4H4z"></path><path d="M17 14h3v4h-3z"></path></svg></span>
+          <span class="sv-nav-label">My Tasks</span>
+        </button>
+        <button class="sv-nav-item" data-role="artist" id="nav-shots" onclick="event.preventDefault();switchTab('versions')">
+          <span class="sv-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 6h16v10H8l-4 4z"></path></svg></span>
+          <span class="sv-nav-label">My Shots</span>
+        </button>
+      </nav>
+      <div class="sv-side-foot">
+        <button class="sv-nav-item">
+          <span class="sv-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1a7 7 0 0 0-1.8-1l-.3-2.5h-4l-.3 2.5a7 7 0 0 0-1.8 1l-2.4-1-2 3.4 2 1.5a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.4-1a7 7 0 0 0 1.8 1l.3 2.5h4l.3-2.5a7 7 0 0 0 1.8-1l2.4 1 2-3.4-2-1.5c.1-.3.1-.7.1-1z"></path></svg></span>
+          <span class="sv-nav-label">Settings</span>
+        </button>
+        <button class="sv-collapse" type="button" onclick="ShellLayout.toggleSidebar(event)">
+          <span class="sv-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m14 6-6 6 6 6"></path></svg></span>
+          <span class="sv-nav-label">Collapse</span>
+        </button>
+        <button class="sv-dept-pill">FX Department <span>Change</span></button>
       </div>
-    </nav>
+    </aside>
 
     <!-- ══ MAIN ══ -->
-    <main class="main">
+    <main class="sv-main main">
+      <header class="sv-topbar topbar">
+        <div class="sv-project">
+          <span>PROJECT</span>
+          <select>
+            <option>Fire Temple</option>
+            <option>Echo Point</option>
+            <option>Nova</option>
+            <option>Atlas</option>
+          </select>
+        </div>
+        <div class="sv-search-wrap">
+          <input class="sv-search" placeholder="Search shots, tasks, versions..." />
+        </div>
+        <div class="sv-head-actions">
+          <button class="sv-insights-btn" onclick="showToast('info','Insights coming soon')">Insights ⚡</button>
+          <div class="sv-user-chip user-chip" onclick="UserMenu.toggle(event)">
+            <button class="sv-user-avatar user-av">AJ</button>
+            <div class="sv-user user-info">
+              <span class="sv-user-name user-name">Alex Chen</span><small class="sv-user-role user-role">FX Artist</small>
+            </div>
+            <svg class="sv-user-chevron" viewBox="0 0 24 24" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+            <div class="sv-user-menu" id="user-menu">
+              <button onclick="UserMenu.profile(event)">View Profile</button>
+              <button onclick="UserMenu.setRole(event,'artist')">Switch to Artist</button>
+              <button onclick="UserMenu.setRole(event,'supervisor')">Switch to Supervisor</button>
+              <button onclick="UserMenu.setRole(event,'producer')">Switch to Producer</button>
+              <button onclick="UserMenu.signOut(event)">Sign Out</button>
+            </div>
+          </div>
+        </div>
+      </header>
 
       <!-- 3-column area -->
       <div class="cols dashboard-content">
@@ -788,6 +764,10 @@
         <span class="sv-nav-label">Review Queue</span>
         <span class="sv-pill">12</span>
       </button>
+      <button class="sv-nav-item" id="sv-nav-review-workspace" onclick="setAppView('review-workspace')">
+        <span class="sv-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5h10v3H4z"></path><path d="M4 10h10v9H4z"></path><path d="M16 5h4v14h-4z"></path></svg></span>
+        <span class="sv-nav-label">Review Workspace</span>
+      </button>
       <button class="sv-nav-item">
         <span class="sv-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 8.5 7.5 4h9L21 8.5v8.8a1.7 1.7 0 0 1-1.7 1.7H4.7A1.7 1.7 0 0 1 3 17.3z"></path><path d="M7 12h10"></path></svg></span>
         <span class="sv-nav-label">Shots</span>
@@ -810,7 +790,7 @@
         <span class="sv-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1a7 7 0 0 0-1.8-1l-.3-2.5h-4l-.3 2.5a7 7 0 0 0-1.8 1l-2.4-1-2 3.4 2 1.5a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.4-1a7 7 0 0 0 1.8 1l.3 2.5h4l.3-2.5a7 7 0 0 0 1.8-1l2.4 1 2-3.4-2-1.5c.1-.3.1-.7.1-1z"></path></svg></span>
         <span class="sv-nav-label">Settings</span>
       </button>
-      <button class="sv-collapse">
+      <button class="sv-collapse" type="button" onclick="ShellLayout.toggleSidebar(event)">
         <span class="sv-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m14 6-6 6 6 6"></path></svg></span>
         <span class="sv-nav-label">Collapse</span>
       </button>
@@ -849,6 +829,7 @@
             <button onclick="SupervisorUserMenu.uploadAvatar(event)">Upload Profile Picture</button>
             <input type="file" accept="image/*" id="sv-user-avatar-upload" class="is-hidden" onchange="SupervisorUserMenu.onAvatarSelected(event)" />
             <button onclick="SupervisorUserMenu.setRole(event,'artist')">Switch to Artist (Prototype)</button>
+            <button onclick="SupervisorUserMenu.setRole(event,'producer')">Switch to Producer</button>
             <button onclick="SupervisorUserMenu.signOut(event)">Sign Out</button>
           </div>
         </div>
@@ -856,10 +837,6 @@
     </header>
 
     <div class="sv-content dashboard-content">
-      <div class="sv-layout">
-      <div class="sv-container main-container">
-      <div class="dashboard">
-      <div class="dashboard-inner">
       <div id="sv-project-dashboard">
       <div class="dashboard-header">
         <div class="sv-heading-row">
@@ -1034,10 +1011,6 @@
       </div>
 
       </div>
-      </div>
-      </div>
-      </div>
-      </div>
 
       <div id="sv-global-dashboard" class="is-hidden">
         <div class="dashboard-header">
@@ -1128,6 +1101,7 @@
         </div>
       </div>
       <div id="sv-review-queue-view" class="is-hidden"></div>
+      <div id="sv-review-workspace-view" class="is-hidden"></div>
     </div>
 
     <aside class="sv-insights-panel" id="sv-insights-panel" aria-label="Insights panel">
@@ -1257,6 +1231,208 @@
         </button>
       </div>
     </div>
+  </div>
+</div>
+</template>
+
+<template id="producer-app-template">
+<div id="producer-app" class="app producer-app" aria-label="Producer dashboard">
+  <div class="body-wrap">
+    <aside class="sv-sidebar sidebar">
+      <div class="sv-brand">
+        <img class="sv-brand-logo" src="images/assets/frameshift-logo.png" alt="Frameshift" />
+      </div>
+      <nav class="sv-nav">
+        <button class="sv-nav-item active" data-role="producer"><span class="sv-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7"></rect><rect x="13" y="4" width="7" height="4"></rect><rect x="13" y="10" width="7" height="10"></rect><rect x="4" y="13" width="7" height="7"></rect></svg></span><span class="sv-nav-label">Producer Dashboard</span></button>
+        <button class="sv-nav-item" data-role="producer"><span class="sv-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 8h18v12H3z"></path><path d="M7 8V5h10v3"></path></svg></span><span class="sv-nav-label">Projects</span></button>
+        <button class="sv-nav-item" data-role="producer"><span class="sv-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 6h16v10H8l-4 4z"></path></svg></span><span class="sv-nav-label">Shots</span></button>
+        <button class="sv-nav-item" data-role="producer"><span class="sv-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 4h16v6H4z"></path><path d="M4 14h7v6H4z"></path><path d="M13 14h7v6h-7z"></path></svg></span><span class="sv-nav-label">Sequences</span></button>
+        <button class="sv-nav-item" data-role="producer"><span class="sv-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 6h16v4H4z"></path><path d="M4 14h10v4H4z"></path><path d="M17 14h3v4h-3z"></path></svg></span><span class="sv-nav-label">Tasks Overview</span></button>
+        <button class="sv-nav-item" data-role="producer"><span class="sv-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"></circle><path d="M12 8v4l3 2"></path></svg></span><span class="sv-nav-label">Schedule</span></button>
+        <button class="sv-nav-item" data-role="producer"><span class="sv-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="8" cy="9" r="3"></circle><circle cx="16" cy="9" r="3"></circle><path d="M3 19c1-2.5 3.2-4 5-4s4 1.5 5 4"></path><path d="M11 19c1-2.2 3-3.5 5-3.5 1.8 0 3.7 1.3 5 3.5"></path></svg></span><span class="sv-nav-label">Team &amp; Resources</span></button>
+        <button class="sv-nav-item" data-role="producer"><span class="sv-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 12h16"></path><path d="M12 4v16"></path></svg></span><span class="sv-nav-label">My Approvals</span></button>
+        <button class="sv-nav-item" data-role="producer"><span class="sv-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 18h16"></path><path d="M7 14v4"></path><path d="M12 10v8"></path><path d="M17 6v12"></path></svg></span><span class="sv-nav-label">Reports</span></button>
+        <button class="sv-nav-item" data-role="producer"><span class="sv-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1a7 7 0 0 0-1.8-1l-.3-2.5h-4l-.3 2.5a7 7 0 0 0-1.8 1l-2.4-1-2 3.4 2 1.5a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.4-1a7 7 0 0 0 1.8 1l.3 2.5h4l.3-2.5a7 7 0 0 0 1.8-1l2.4 1 2-3.4-2-1.5c.1-.3.1-.7.1-1z"></path></svg></span><span class="sv-nav-label">Settings</span></button>
+        <button class="sv-nav-item" data-role="producer"><span class="sv-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="5" rx="1"></rect><rect x="3" y="14" width="18" height="5" rx="1"></rect><path d="M8 5V3M16 5V3M8 19v2M16 19v2" fill="none" stroke="currentColor" stroke-width="1.5"></path></svg></span><span class="sv-nav-label">Studio Settings</span></button>
+      </nav>
+      <div class="sv-side-foot">
+        <button class="sv-dept-pill producer-dept-pill" type="button">Production Dept <span>Change</span></button>
+        <button class="sv-collapse" type="button" onclick="ShellLayout.toggleSidebar(event)">
+          <span class="sv-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m14 6-6 6 6 6"></path></svg></span>
+          <span class="sv-nav-label">Collapse</span>
+        </button>
+      </div>
+    </aside>
+    <main class="sv-main main">
+      <header class="sv-topbar topbar producer-topbar">
+        <div class="producer-topbar-studio">
+          <span class="producer-studio-label">Studio</span>
+          <select class="producer-studio-select" aria-label="Studio">
+            <option>Frameshift Studios</option>
+          </select>
+        </div>
+        <div class="sv-search-wrap producer-topbar-search-wrap">
+          <span class="producer-topbar-search-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg></span>
+          <input class="sv-search producer-topbar-search-field" type="search" placeholder="Search projects, shots, tasks, people..." aria-label="Search" />
+          <kbd class="producer-topbar-kbd"><span class="producer-kbd-mod">⌘</span><span class="producer-kbd-key">K</span></kbd>
+        </div>
+        <div class="sv-head-actions producer-topbar-actions">
+          <button type="button" class="producer-insights-btn" onclick="showToast('info','Producer insights coming soon')"><svg class="producer-insights-bolt" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M13 2L3 14h8l-2 8 10-12h-8l2-8z" fill="currentColor"/></svg> Insights</button>
+          <button type="button" class="producer-topbar-notify" onclick="showToast('info','Notifications')" aria-label="Notifications"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 10-12 0c0 7-3 7-3 7h18s-3 0-3-7"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg><i class="producer-notify-dot" aria-hidden="true"></i></button>
+          <div class="sv-user-chip" onclick="UserMenu.toggle(event)">
+            <button class="sv-user-avatar" id="producer-user-avatar-btn" onclick="event.stopPropagation();UserMenu.toggle(event)">
+              <img id="producer-user-avatar" src="https://api.dicebear.com/9.x/personas/svg?seed=Sarah%20Chen" alt="Producer profile" />
+            </button>
+            <div class="sv-user">
+              <span id="producer-user-name" class="user-name">Sarah Chen</span><small id="producer-user-role" class="user-role">Producer</small>
+            </div>
+            <svg class="sv-user-chevron" viewBox="0 0 24 24" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+            <div class="sv-user-menu" id="user-menu">
+              <button onclick="UserMenu.profile(event)">View Profile</button>
+              <button onclick="UserMenu.setRole(event,'artist')">Switch to Artist</button>
+              <button onclick="UserMenu.setRole(event,'supervisor')">Switch to Supervisor</button>
+              <button onclick="UserMenu.setRole(event,'producer')">Switch to Producer</button>
+              <button onclick="UserMenu.signOut(event)">Sign Out</button>
+            </div>
+          </div>
+        </div>
+      </header>
+      <div class="sv-content dashboard-content">
+        <section class="producer-wrap">
+          <header class="producer-head">
+            <div>
+              <h1>Producer Dashboard</h1>
+              <p>Overview of all projects, progress, and production health.</p>
+            </div>
+            <button class="producer-create">+ Create Project</button>
+          </header>
+
+          <section class="producer-kpis">
+            <article class="producer-kpi producer-kpi-blue"><span class="producer-kpi-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 10.5 12 4l9 6.5V20a1 1 0 01-1 1h-5v-6H9v6H4a1 1 0 01-1-1v-9.5z" fill="currentColor" opacity=".95"/></svg></span><div><h3>Active Projects</h3><strong>5</strong><em>2 in pre-production</em></div></article>
+            <article class="producer-kpi producer-kpi-green"><span class="producer-kpi-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 4h7v7H4V4zm9 0h7v4h-7V4zm0 6h7v10h-7V10zM4 13h7v7H4v-7z" fill="currentColor" opacity=".95"/></svg></span><div><h3>Total Shots</h3><strong>1,248</strong><em class="producer-kpi-up">↑ +128 this week</em></div></article>
+            <article class="producer-kpi producer-kpi-purple"><span class="producer-kpi-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7-11-7z" fill="currentColor" opacity=".95"/></svg></span><div><h3>Shots In Progress</h3><strong>312</strong><em>25% of total</em></div></article>
+            <article class="producer-kpi producer-kpi-amber"><span class="producer-kpi-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 19V5l7 7 7-7v14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 12h6M14 12h6" stroke="currentColor" stroke-width="2"/></svg></span><div><h3>On Track</h3><strong>892</strong><em>72% of total</em></div></article>
+            <article class="producer-kpi producer-kpi-red"><span class="producer-kpi-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 008.3 1.7M14 11a5 5 0 00-8.3-1.7" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/></svg></span><div><h3>At Risk</h3><strong>138</strong><em>11% of total</em></div></article>
+            <article class="producer-kpi producer-kpi-indigo"><span class="producer-kpi-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 2l2.4 7.4H22l-6 4.6 2.3 7L12 16.9 5.7 21l2.3-7-6-4.6h7.6L12 2z" fill="currentColor" opacity=".95"/></svg></span><div><h3>Completed Shots</h3><strong>218</strong><em>18% of total</em></div></article>
+          </section>
+
+          <section class="producer-main-grid">
+            <article class="producer-card producer-projects-card">
+              <div class="producer-card-head"><h2>Projects Overview</h2><button class="producer-link-btn">View all projects →</button></div>
+              <div class="producer-table">
+                <div class="producer-row producer-head-row"><span>Project</span><span>Status</span><span>Shots</span><span>Progress</span><span>Deadline</span><span></span></div>
+                <div class="producer-row">
+                  <span class="producer-project"><i class="producer-thumb producer-thumb-1"></i><span><b>Echo Point</b><em>Client: Aurora Pictures</em></span></span>
+                  <span><i class="badge ontrack">In Production</i></span><span>362 / 420</span><span><u style="--p:86%"></u></span><span>May 31, 2025</span><span class="producer-dots">•••</span>
+                </div>
+                <div class="producer-row">
+                  <span class="producer-project"><i class="producer-thumb producer-thumb-2"></i><span><b>Nebula Drift</b><em>Client: Orion Studios</em></span></span>
+                  <span><i class="badge ontrack">In Production</i></span><span>284 / 350</span><span class="producer-progress-cell"><u style="--p:81%"></u><b>81%</b></span><span>Jun 15, 2025</span><span class="producer-dots">•••</span>
+                </div>
+                <div class="producer-row">
+                  <span class="producer-project"><i class="producer-thumb producer-thumb-3"></i><span><b>Silverline</b><em>Client: Zenith Studios</em></span></span>
+                  <span><i class="badge prep">Pre Production</i></span><span>0 / 280</span><span class="producer-progress-cell"><u style="--p:12%"></u><b>12%</b></span><span>Jul 10, 2025</span><span class="producer-dots">•••</span>
+                </div>
+                <div class="producer-row">
+                  <span class="producer-project"><i class="producer-thumb producer-thumb-4"></i><span><b>Project Helios</b><em>Client: Vanguard Media</em></span></span>
+                  <span><i class="badge plan">Planning</i></span><span>0 / 150</span><span class="producer-progress-cell"><u style="--p:5%"></u><b>5%</b></span><span>Aug 01, 2025</span><span class="producer-dots">•••</span>
+                </div>
+                <div class="producer-row">
+                  <span class="producer-project"><i class="producer-thumb producer-thumb-5"></i><span><b>Midnight Protocol</b><em>Client: Blackframe</em></span></span>
+                  <span><i class="badge ontrack">In Production</i></span><span>312 / 350</span><span class="producer-progress-cell"><u style="--p:89%"></u><b>89%</b></span><span>May 20, 2025</span><span class="producer-dots">•••</span>
+                </div>
+              </div>
+            </article>
+
+            <article class="producer-card producer-health-card">
+              <div class="producer-card-head"><h2>Production Health</h2><button class="producer-link-btn">View full report →</button></div>
+              <div class="producer-health">
+                <div class="producer-donut-wrap">
+                  <div class="producer-donut"></div>
+                  <div class="producer-donut-center"><strong>1,248</strong><span>Total Shots</span></div>
+                </div>
+                <ul>
+                  <li><span><i class="dot ok"></i>On Track</span><b>892 (72%)</b></li>
+                  <li><span><i class="dot risk"></i>At Risk</span><b>138 (11%)</b></li>
+                  <li><span><i class="dot delayed"></i>Delayed</span><b>76 (6%)</b></li>
+                  <li><span><i class="dot idle"></i>Not Started</span><b>142 (11%)</b></li>
+                </ul>
+              </div>
+              <div class="producer-alert-box">
+                <div><strong>138 shots are at risk</strong><span>Due to delays, resource conflicts, or dependencies</span></div>
+                <button>Review at risk shots →</button>
+              </div>
+            </article>
+          </section>
+
+          <section class="producer-bottom-grid">
+            <article class="producer-card">
+              <div class="producer-card-head"><h2>Upcoming Deadlines</h2><button class="producer-link-btn">View calendar →</button></div>
+              <div class="producer-deadline"><span class="date"><small>MAY</small>20</span><div><b>Echo Point · Sequence 12</b><em>Delivery Deadline</em></div><span class="producer-age">2 days</span></div>
+              <div class="producer-deadline"><span class="date"><small>MAY</small>25</span><div><b>Nebula Drift · Shot ND_0450</b><em>Client Review</em></div><span class="producer-age">7 days</span></div>
+              <div class="producer-deadline"><span class="date"><small>MAY</small>31</span><div><b>Echo Point · Final Delivery</b><em>Project Deadline</em></div><span class="producer-age">13 days</span></div>
+              <div class="producer-deadline"><span class="date"><small>JUN</small>10</span><div><b>Silverline · Sequence 02</b><em>First Cut Deadline</em></div><span class="producer-age">23 days</span></div>
+            </article>
+
+            <article class="producer-card producer-schedule-card">
+              <div class="producer-card-head"><h2>Production Schedule</h2><button class="producer-link-btn">View full schedule →</button></div>
+              <div class="producer-gantt">
+                <div class="producer-gantt-head"><span class="producer-gantt-label-spacer"></span><span>May 2025</span><span>Jun 2025</span></div>
+                <div class="producer-gantt-body">
+                  <div class="producer-gantt-labels">
+                    <span>Echo Point</span>
+                    <span>Nebula Drift</span>
+                    <span>Silverline</span>
+                    <span>Project Helios</span>
+                    <span>Midnight Protocol</span>
+                  </div>
+                  <div class="producer-gantt-tracks">
+                    <span class="producer-gantt-today" style="left:46%" title="Today"></span>
+                    <div class="producer-gantt-track"><i style="--l:6%;--w:38%;--c:#57d36d"></i></div>
+                    <div class="producer-gantt-track"><i style="--l:18%;--w:42%;--c:#3f7eff"></i></div>
+                    <div class="producer-gantt-track"><i style="--l:52%;--w:28%;--c:#d3a24d"></i></div>
+                    <div class="producer-gantt-track"><i style="--l:62%;--w:22%;--c:#8858ff"></i></div>
+                    <div class="producer-gantt-track"><i style="--l:10%;--w:48%;--c:#57d36d"></i></div>
+                  </div>
+                </div>
+              </div>
+            </article>
+
+            <article class="producer-card producer-team-card">
+              <div class="producer-card-head"><h2>Team Workload</h2><button class="producer-link-btn">View team →</button></div>
+              <div class="producer-work-table">
+                <div class="producer-work-head"><span>Member</span><span>Role</span><span>Assigned</span><span>Capacity</span></div>
+                <div class="producer-work-row">
+                  <div class="producer-person"><i>SC</i><b>Sarah Chen</b></div><span class="producer-w-role">Producer</span><span class="producer-w-assign">28 / 40 shots</span><span class="producer-w-pct">70%</span>
+                  <div class="producer-w-bar"><i style="--w:70%;--c:#d3a24d"></i></div>
+                </div>
+                <div class="producer-work-row">
+                  <div class="producer-person"><i>JC</i><b>John Carter</b></div><span class="producer-w-role">Supervisor</span><span class="producer-w-assign">32 / 40 shots</span><span class="producer-w-pct">80%</span>
+                  <div class="producer-w-bar"><i style="--w:80%;--c:#3f7eff"></i></div>
+                </div>
+                <div class="producer-work-row">
+                  <div class="producer-person"><i>MP</i><b>Maya Patel</b></div><span class="producer-w-role">FX Supervisor</span><span class="producer-w-assign">35 / 40 shots</span><span class="producer-w-pct">88%</span>
+                  <div class="producer-w-bar"><i style="--w:88%;--c:#ff6767"></i></div>
+                </div>
+                <div class="producer-work-row">
+                  <div class="producer-person"><i>PN</i><b>Priya Nair</b></div><span class="producer-w-role">Comp Supervisor</span><span class="producer-w-assign">26 / 40 shots</span><span class="producer-w-pct">65%</span>
+                  <div class="producer-w-bar"><i style="--w:65%;--c:#57d36d"></i></div>
+                </div>
+                <div class="producer-work-row">
+                  <div class="producer-person"><i>EB</i><b>Evan Brooks</b></div><span class="producer-w-role">Lighting Supervisor</span><span class="producer-w-assign">18 / 40 shots</span><span class="producer-w-pct">45%</span>
+                  <div class="producer-w-bar"><i style="--w:45%;--c:#57d36d"></i></div>
+                </div>
+              </div>
+            </article>
+          </section>
+
+          <section class="producer-footer-alert">
+            <div><strong>138 shots need your attention</strong><span>76 delayed + 62 at risk</span></div>
+            <div class="producer-footer-actions"><button class="primary">Review All Issues</button><button>View Detailed Report</button></div>
+          </section>
+        </section>
+      </div>
+    </main>
   </div>
 </div>
 </template>

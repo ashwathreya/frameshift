@@ -1,0 +1,129 @@
+<section class="cs-panel" aria-label="Create studio onboarding">
+  <header class="cs-head">
+    <div>
+      <h2>Create Your Studio</h2>
+      <p>Set up your studio and team in a few simple steps.</p>
+    </div>
+    <button type="button" class="cs-close" data-cs-close aria-label="Close onboarding">&times;</button>
+  </header>
+
+  <nav class="cs-stepper" data-cs-stepper>
+    <div class="cs-step-item active" data-step="1"><span class="cs-dot">1</span><span>Company Info</span></div>
+    <div class="cs-step-item" data-step="2"><span class="cs-dot">2</span><span>Departments</span></div>
+    <div class="cs-step-item" data-step="3"><span class="cs-dot">3</span><span>Roles &amp; Permissions</span></div>
+    <div class="cs-step-item" data-step="4"><span class="cs-dot">4</span><span>Team Members</span></div>
+    <div class="cs-step-item" data-step="5"><span class="cs-dot">5</span><span>Review &amp; Launch</span></div>
+  </nav>
+
+  <section class="cs-body">
+    <div class="cs-step active" data-panel="1">
+      <h3>Company Information</h3>
+      <p class="cs-sub">Let's start with the basics about your studio.</p>
+      <div class="cs-grid one">
+        <label class="cs-field">
+          <span>Studio Name</span>
+          <input type="text" data-field="studioName" placeholder="Frameshift Studios" />
+          <small data-error="studioName"></small>
+        </label>
+        <label class="cs-field">
+          <span>Website (Optional)</span>
+          <input type="text" data-field="website" placeholder="www.frameshift.com" />
+        </label>
+        <label class="cs-field">
+          <span>Country / Region</span>
+          <select data-field="country">
+            <option value="">Select country</option>
+            <option>United States</option>
+            <option>Canada</option>
+            <option>United Kingdom</option>
+            <option>India</option>
+          </select>
+          <small data-error="country"></small>
+        </label>
+        <label class="cs-field">
+          <span>Time Zone</span>
+          <select data-field="timezone">
+            <option value="">Select timezone</option>
+            <option>(GMT -8:00) Pacific Time</option>
+            <option>(GMT -5:00) Eastern Time</option>
+            <option>(GMT +0:00) GMT</option>
+            <option>(GMT +5:30) India Time</option>
+          </select>
+          <small data-error="timezone"></small>
+        </label>
+      </div>
+      <div class="cs-field">
+        <span>Industry Focus (Optional)</span>
+        <div class="cs-tags" data-cs-tags>
+          <button type="button" class="cs-tag selected" data-tag="VFX">VFX</button>
+          <button type="button" class="cs-tag" data-tag="Animation">Animation</button>
+          <button type="button" class="cs-tag" data-tag="Virtual Production">Virtual Production</button>
+          <button type="button" class="cs-tag" data-tag="Design">Design</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="cs-step" data-panel="2">
+      <h3>Departments</h3>
+      <p class="cs-sub">Add departments that exist in your studio.</p>
+      <div class="cs-list" data-cs-departments></div>
+      <small class="cs-error" data-error="departments"></small>
+      <button type="button" class="cs-ghost cs-block" data-cs-add-department>+ Add Department</button>
+    </div>
+
+    <div class="cs-step" data-panel="3">
+      <h3>Roles &amp; Permissions</h3>
+      <p class="cs-sub">Define roles and set basic permissions.</p>
+      <div class="cs-role-grid" data-cs-roles>
+        <button type="button" class="cs-role selected" data-role="Artist"><b>Artist</b><span>Create &amp; update</span></button>
+        <button type="button" class="cs-role selected" data-role="Supervisor"><b>Supervisor</b><span>Review &amp; approve</span></button>
+        <button type="button" class="cs-role" data-role="Producer"><b>Producer</b><span>Manage projects</span></button>
+        <button type="button" class="cs-role" data-role="Client"><b>Client</b><span>Review feedback</span></button>
+        <button type="button" class="cs-role" data-role="Head of FX"><b>Head of FX</b><span>Oversee FX</span></button>
+        <button type="button" class="cs-role" data-role="Head of CG"><b>Head of CG</b><span>Oversee CG</span></button>
+      </div>
+      <small class="cs-error" data-error="roles"></small>
+      <button type="button" class="cs-ghost cs-block" data-cs-custom-role>+ Create Custom Role</button>
+    </div>
+
+    <div class="cs-step" data-panel="4">
+      <h3>Team Members</h3>
+      <p class="cs-sub">Add your team members.</p>
+      <div class="cs-tabs">
+        <button type="button" class="cs-tab active" data-mode="csv">Import CSV</button>
+        <button type="button" class="cs-tab" data-mode="manual">Add Manually</button>
+      </div>
+      <div class="cs-mode active" data-mode-panel="csv">
+        <div class="cs-dropzone" data-cs-dropzone>Drag &amp; drop your CSV file here<br />or click to browse</div>
+        <button type="button" class="cs-link">Download CSV Template</button>
+      </div>
+      <div class="cs-mode" data-mode-panel="manual">
+        <div class="cs-manual-grid">
+          <input type="text" data-field="memberName" placeholder="Member name" />
+          <select data-field="memberRole"><option value="">Role</option><option>Artist</option><option>Supervisor</option><option>Producer</option></select>
+          <select data-field="memberDepartment"><option value="">Department</option><option>FX</option><option>Lighting</option><option>Compositing</option></select>
+          <button type="button" class="cs-ghost" data-cs-add-member>+ Add</button>
+        </div>
+      </div>
+      <small class="cs-error" data-error="team"></small>
+      <div class="cs-list compact" data-cs-team></div>
+    </div>
+
+    <div class="cs-step" data-panel="5">
+      <h3>Review &amp; Launch</h3>
+      <p class="cs-sub">Review your settings and launch your studio.</p>
+      <div class="cs-summary">
+        <div><span>Studio Name</span><b data-summary="studioName">—</b></div>
+        <div><span>Departments</span><b data-summary="departments">0</b></div>
+        <div><span>Roles</span><b data-summary="roles">0</b></div>
+        <div><span>Team Members</span><b data-summary="members">0</b></div>
+      </div>
+      <div class="cs-note">Your data is secure and never shared.</div>
+    </div>
+  </section>
+
+  <footer class="cs-actions">
+    <button type="button" class="cs-ghost" data-cs-back>Back</button>
+    <button type="button" class="cs-primary" data-cs-next>Next</button>
+  </footer>
+</section>

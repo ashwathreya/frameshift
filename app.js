@@ -29,6 +29,60 @@ const Store = {
   }
 };
 
+const ShellLayout = {
+  storageKey: 'frameshift.shell.sidebarCollapsed',
+
+  isCollapsed() {
+    return !!Store.get(this.storageKey, false);
+  },
+
+  setCollapsed(collapsed) {
+    Store.set(this.storageKey, !!collapsed);
+    this.apply();
+  },
+
+  toggleSidebar(event) {
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    this.setCollapsed(!this.isCollapsed());
+  },
+
+  apply() {
+    const rootApp = document.querySelector('#root .app');
+    if (!rootApp) return;
+    rootApp.classList.toggle('is-sidebar-collapsed', this.isCollapsed());
+    this.updateTooltips(rootApp);
+  },
+
+  updateTooltips(rootApp) {
+    const collapsed = rootApp.classList.contains('is-sidebar-collapsed');
+    const setTitle = (el, label) => {
+      if (!el || !label) return;
+      if (collapsed) el.setAttribute('title', label);
+      else el.removeAttribute('title');
+    };
+
+    rootApp.querySelectorAll('.sv-nav-item').forEach((item) => {
+      const label = item.querySelector('.sv-nav-label')?.textContent?.trim();
+      setTitle(item, label);
+    });
+    rootApp.querySelectorAll('.artist-app .nav-item').forEach((item) => {
+      const label = item.textContent?.trim();
+      setTitle(item, label);
+    });
+
+    const collapseBtn = rootApp.querySelector('.sv-collapse');
+    if (collapseBtn) {
+      const labelNode = collapseBtn.querySelector('.sv-nav-label');
+      if (labelNode) {
+        labelNode.textContent = collapsed ? 'Expand' : 'Collapse';
+      }
+      setTitle(collapseBtn, collapsed ? 'Expand sidebar' : 'Collapse sidebar');
+    }
+  }
+};
+window.ShellLayout = ShellLayout;
+
 const User = {
   current: Store.get('frameshift.currentUser', {
     name: 'Maya Patel',
@@ -50,7 +104,13 @@ const User = {
     const role = document.querySelector('.user-role');
     const av = document.querySelector('.user-av');
     if (name) name.textContent = this.current.name;
-    if (role) role.textContent = this.current.role === 'supervisor' ? 'FX Supervisor' : 'FX Artist';
+    if (role) {
+      role.textContent = this.current.role === 'supervisor'
+        ? 'FX Supervisor'
+        : this.current.role === 'producer'
+          ? 'Producer'
+          : 'FX Artist';
+    }
     if (av) av.textContent = this.current.name.split(' ').map(p => p[0]).join('').slice(0,2);
   },
 
@@ -152,7 +212,14 @@ function renderSupervisorApp() {
 }
 
 function renderProducerApp() {
-  renderArtistApp();
+  mountRoleTemplate('producer-app-template');
+}
+
+function applyRoleUI(role) {
+  document.querySelectorAll('[data-role]').forEach((el) => {
+    const isVisible = el.dataset.role === role;
+    el.classList.toggle('is-role-hidden', !isVisible);
+  });
 }
 
 function renderAppByRole() {
@@ -170,13 +237,26 @@ function renderAppByRole() {
       renderArtistApp();
       break;
   }
+  applyRoleUI(User.current.role);
+  ShellLayout.apply();
 }
 window.renderAppByRole = renderAppByRole;
 
 window.toggleRole = () => {
-  const next = User.current.role === 'artist' ? 'supervisor' : 'artist';
-  User.setRole(next);
+  const order = ['artist', 'supervisor', 'producer'];
+  const index = order.indexOf(User.current.role);
+  User.setRole(order[(index + 1) % order.length]);
 };
+
+function signOutToAuth() {
+  try {
+    localStorage.removeItem('frameshift.authRole');
+    localStorage.removeItem('frameshift.currentUser');
+  } catch (_error) {
+    // Keep sign out flow resilient even if storage is unavailable.
+  }
+  window.location.replace('./pages/auth/login.html');
+}
 
 const UserMenu = {
   toggle(event) {
@@ -203,8 +283,8 @@ const UserMenu = {
 
   signOut(event) {
     event?.stopPropagation();
-    showToast('info', 'Signed out of Frameshift');
     this.close();
+    signOutToAuth();
   }
 };
 window.UserMenu = UserMenu;
@@ -264,7 +344,13 @@ const SupervisorUserMenu = {
     const name = document.getElementById('sv-user-name');
     const role = document.getElementById('sv-user-role');
     if (name) name.textContent = User.current.name || 'Sarah Connor';
-    if (role) role.textContent = User.current.role === 'supervisor' ? 'FX Supervisor' : 'FX Artist';
+    if (role) {
+      role.textContent = User.current.role === 'supervisor'
+        ? 'FX Supervisor'
+        : User.current.role === 'producer'
+          ? 'Producer'
+          : 'FX Artist';
+    }
     const saved = Store.get(this._avatarKey, '');
     const fallback = `https://api.dicebear.com/9.x/personas/svg?seed=${encodeURIComponent(User.current.name || 'Sarah Connor')}`;
     if (avatar) avatar.src = saved || fallback;
@@ -278,8 +364,8 @@ const SupervisorUserMenu = {
 
   signOut(event) {
     event?.stopPropagation();
-    showToast('info', 'Signed out of Frameshift');
     this.close();
+    signOutToAuth();
   }
 };
 window.SupervisorUserMenu = SupervisorUserMenu;
@@ -325,6 +411,60 @@ function generateInsights(data) {
   return DashboardData.getInsights(data);
 }
 
+function analyzeNotes(notes = []) {
+  const keywordConfig = [
+    { key: 'smoke', aliases: ['smoke', 'plume', 'fog'] },
+    { key: 'fire', aliases: ['fire', 'flame', 'burn', 'embers'] },
+    { key: 'debris', aliases: ['debris', 'shard', 'fragment', 'rubble'] }
+  ];
+  const byFrame = {};
+  const recurring = {};
+  const repeatedKeywords = {};
+  (notes || []).forEach((n) => {
+    const text = String(n.text || '').toLowerCase();
+    const frame = Number(n.frame || 0);
+    if (frame) {
+      if (!byFrame[frame]) byFrame[frame] = [];
+      byFrame[frame].push(n);
+    }
+    keywordConfig.forEach((k) => {
+      if (k.aliases.some((a) => text.includes(a))) {
+        repeatedKeywords[k.key] = (repeatedKeywords[k.key] || 0) + 1;
+        recurring[k.key] = recurring[k.key] || [];
+        recurring[k.key].push(n);
+      }
+    });
+  });
+  const clusteredFrames = Object.keys(byFrame)
+    .map((f) => ({ frame: Number(f), count: byFrame[f].length, notes: byFrame[f] }))
+    .sort((a, b) => b.count - a.count);
+  return { repeatedKeywords, clusteredFrames, recurringIssues: recurring };
+}
+
+function generateSuggestions(analysis) {
+  const suggestions = [];
+  const rules = {
+    smoke: 'Adjust smoke density breakup and add turbulence variation.',
+    fire: 'Tune fire intensity falloff and shading response across the shot.',
+    debris: 'Refine debris timing and velocity arcs for better readability.'
+  };
+  Object.entries(analysis.repeatedKeywords || {}).forEach(([key, count]) => {
+    const rec = analysis.recurringIssues?.[key] || [];
+    const frame = Number(rec[0]?.frame || analysis.clusteredFrames?.[0]?.frame || 1);
+    const relatedNoteIds = rec.map((n) => n.id).filter(Boolean);
+    suggestions.push({
+      id: `sg-${key}-${frame}`,
+      keyword: key,
+      frame,
+      severity: count >= 3 ? 'high' : 'medium',
+      label: `${key.toUpperCase()} recurring in notes (${count})`,
+      detail: rules[key] || 'Review recurring issue and apply targeted pass.',
+      relatedNoteIds
+    });
+  });
+  return suggestions;
+}
+
 // ATTENTION
 function getImmediateAttention(data) {
   return DashboardData.getImmediateAttention(data);
@@ -351,6 +491,54 @@ const SupervisorDashboard = {
     sortDir: 'desc',
     page: 1,
     pageSize: 10
+  }),
+  reviewWorkspaceState: Store.get('frameshift.reviewWorkspaceState', {
+    selectedShot: '',
+    currentFrame: 125,
+    reviewStatus: 'pending',
+    activeTool: 'pointer',
+    activeTab: 'notes',
+    queueFilter: 'all',
+    isPlaying: false,
+    selectedVersion: '',
+    currentVersion: '',
+    previousVersion: '',
+    compareMode: false,
+    playbackSpeed: 1,
+    loopEnabled: false,
+    loopIn: 1,
+    loopOut: 300,
+    noteFilter: 'open',
+    selectedShots: [],
+    lastBulkSummary: '',
+    lastSelectedShot: '',
+    compareVersionTag: ''
+    ,
+    compareMode: 'off',
+    compareOpacity: 0.45,
+    wipePosition: 50,
+    floatingNoteDraft: '',
+    floatingNoteAt: null,
+    expandedNoteId: '',
+    focusedNoteId: '',
+    drawingHiddenNoteIds: [],
+    versionPanelOpen: false,
+    activeSuggestionKeyword: '',
+    compareState: {
+      enabled: false,
+      mode: 'off',
+      baseVersion: '',
+      compareVersion: '',
+      wipeX: 50,
+      opacity: 0.45
+    },
+    liveSession: {
+      users: [],
+      currentShot: '',
+      currentFrame: 1,
+      followMode: true,
+      livePresenceOpen: false
+    }
   }),
   artistAvatarMap: Store.get('frameshift.artistAvatarMap', {}),
   artistDirectory: [
@@ -636,10 +824,18 @@ const SupervisorDashboard = {
   },
 
   setView(view) {
-    this.currentView = view === 'review-queue' ? 'review-queue' : 'dashboard';
+    const allowed = new Set(['dashboard', 'review-queue', 'review-workspace']);
+    this.currentView = allowed.has(view) ? view : 'dashboard';
     Store.set('frameshift.supervisorView', this.currentView);
     const app = document.getElementById('supervisor-app');
     if (app) app.classList.toggle('sv-review-queue-mode', this.currentView === 'review-queue');
+    if (this.currentView === 'review-workspace') {
+      document.body.classList.add('sidebar-collapsed');
+      if (typeof ShellLayout !== 'undefined') ShellLayout.setCollapsed(true);
+    } else {
+      document.body.classList.remove('sidebar-collapsed');
+      this._stopWorkspacePlayback();
+    }
     this.render();
   },
 
@@ -722,8 +918,10 @@ const SupervisorDashboard = {
   _syncNavState() {
     const dash = document.getElementById('sv-nav-dashboard');
     const queue = document.getElementById('sv-nav-review-queue');
-    if (dash) dash.classList.toggle('active', this.currentView !== 'review-queue');
+    const workspace = document.getElementById('sv-nav-review-workspace');
+    if (dash) dash.classList.toggle('active', this.currentView === 'dashboard');
     if (queue) queue.classList.toggle('active', this.currentView === 'review-queue');
+    if (workspace) workspace.classList.toggle('active', this.currentView === 'review-workspace');
     const pill = queue?.querySelector('.sv-pill');
     if (pill) {
       const context = this._queueContext();
@@ -765,17 +963,21 @@ const SupervisorDashboard = {
     const projectView = document.getElementById('sv-project-dashboard');
     const globalView = document.getElementById('sv-global-dashboard');
     const queueView = document.getElementById('sv-review-queue-view');
+    const workspaceView = document.getElementById('sv-review-workspace-view');
     const supervisorApp = document.getElementById('supervisor-app');
     if (supervisorApp) supervisorApp.classList.toggle('sv-global-mode', isGlobal);
     if (supervisorApp) supervisorApp.classList.toggle('sv-review-queue-mode', this.currentView === 'review-queue');
+    if (supervisorApp) supervisorApp.classList.toggle('sv-review-workspace-mode', this.currentView === 'review-workspace');
     const showQueue = this.currentView === 'review-queue';
+    const showWorkspace = this.currentView === 'review-workspace';
+    document.body.classList.toggle('sidebar-collapsed', showWorkspace);
     if (projectView) {
-      const hidden = showQueue || isGlobal;
+      const hidden = showQueue || showWorkspace || isGlobal;
       projectView.classList.toggle('is-hidden', hidden);
       projectView.style.display = hidden ? 'none' : '';
     }
     if (globalView) {
-      const hidden = showQueue || !isGlobal;
+      const hidden = showQueue || showWorkspace || !isGlobal;
       globalView.classList.toggle('is-hidden', hidden);
       globalView.style.display = hidden ? 'none' : '';
     }
@@ -783,9 +985,19 @@ const SupervisorDashboard = {
       queueView.classList.toggle('is-hidden', !showQueue);
       queueView.style.display = showQueue ? '' : 'none';
     }
+    if (workspaceView) {
+      workspaceView.classList.toggle('is-hidden', !showWorkspace);
+      workspaceView.style.display = showWorkspace ? '' : 'none';
+      if (showWorkspace) workspaceView.classList.add('review-workspace-host');
+    }
     this._syncNavState();
     if (showQueue) {
       this.renderReviewQueue();
+      this._bindTopSearch();
+      return;
+    }
+    if (showWorkspace) {
+      this.renderReviewWorkspace();
       this._bindTopSearch();
       return;
     }
@@ -1551,6 +1763,922 @@ const SupervisorDashboard = {
     }
   },
 
+  _workspaceShots() {
+    const shots = this.currentProject === 'all'
+      ? this._allShots()
+      : this._allShots().filter((s) => s.project === this.currentProject);
+    const rank = { failed: 0, needs_review: 1, revise: 2, sim_running: 3, cache_ready: 4, approved: 5 };
+    const priorityRank = { high: 0, medium: 1, low: 2 };
+    return shots
+      .slice()
+      .sort((a, b) => {
+        const byStatus = (rank[a.status] ?? 99) - (rank[b.status] ?? 99);
+        if (byStatus !== 0) return byStatus;
+        const byPriority = (priorityRank[a.priority] ?? 99) - (priorityRank[b.priority] ?? 99);
+        if (byPriority !== 0) return byPriority;
+        return String(a.shot).localeCompare(String(b.shot));
+      })
+      .slice(0, 12);
+  },
+
+  _ensureReviewWorkspaceState() {
+    const workspaceShots = this._workspaceShots();
+    if (!workspaceShots.length) return;
+    const firstShot = workspaceShots[0].shot;
+    const state = this.reviewWorkspaceState;
+    if (!state.selectedShot || !workspaceShots.some((s) => s.shot === state.selectedShot)) {
+      state.selectedShot = firstShot;
+    }
+    if (!state.selectedVersion) state.selectedVersion = '';
+    if (typeof state.isPlaying !== 'boolean') state.isPlaying = false;
+    if (!state.playbackSpeed) state.playbackSpeed = 1;
+    if (!state.loopIn) state.loopIn = 1;
+    if (!state.loopOut) state.loopOut = 300;
+    if (!state.compareState || typeof state.compareState !== 'object') {
+      state.compareState = { enabled: false, mode: 'off', baseVersion: '', compareVersion: '', wipeX: 50, opacity: 0.45 };
+    }
+    state.compareState.enabled = state.compareMode && state.compareMode !== 'off';
+    state.compareState.mode = state.compareMode || 'off';
+    state.compareState.baseVersion = state.selectedVersion || state.currentVersion || '';
+    state.compareState.compareVersion = state.compareVersionTag || '';
+    state.compareState.wipeX = Number(state.wipePosition || 50);
+    state.compareState.opacity = Number(state.compareOpacity || 0.45);
+    if (!state.liveSession || typeof state.liveSession !== 'object') {
+      state.liveSession = { users: [], currentShot: state.selectedShot || '', currentFrame: state.currentFrame || 1, followMode: true };
+    }
+    if (!Array.isArray(state.liveSession.users)) state.liveSession.users = [];
+    if (typeof state.liveSession.followMode !== 'boolean') state.liveSession.followMode = true;
+    if (typeof state.liveSession.livePresenceOpen !== 'boolean') state.liveSession.livePresenceOpen = false;
+    state.liveSession.currentShot = state.selectedShot;
+    state.liveSession.currentFrame = state.currentFrame;
+    if (typeof state.versionPanelOpen !== 'boolean') state.versionPanelOpen = false;
+
+    const seeded = Store.get('frameshift.reviewWorkspaceSeededNotes', false);
+    if (!seeded && typeof AnnotationStore !== 'undefined') {
+      workspaceShots.slice(0, 10).forEach((shot, idx) => {
+        const baseFrames = [54, 98, 125, 169];
+        const frameA = baseFrames[idx % baseFrames.length];
+        const frameB = baseFrames[(idx + 1) % baseFrames.length];
+        [
+          { frame: frameA, text: `Check primary ${shot.fxType.toLowerCase()} continuity on ${shot.shot}.`, tone: shot.priority === 'high' ? 'critical' : 'medium' },
+          { frame: frameB, text: `Refine breakup and timing before final approval for ${shot.shot}.`, tone: 'high' }
+        ].forEach((n, nIdx) => {
+          AnnotationStore.add({
+            frame: n.frame,
+            version: shot.version,
+            shot: shot.shot,
+            text: n.text,
+            author: 'Sarah Connor',
+            role: 'supervisor',
+            type: (idx + nIdx) % 2 ? 'arrow' : 'circle',
+            color: n.tone === 'critical' ? '#EF4444' : n.tone === 'high' ? '#F59E0B' : '#3B82F6',
+            x: 28 + Math.round(Math.random() * 42),
+            y: 24 + Math.round(Math.random() * 44),
+            drawingPath: []
+          });
+        });
+      });
+      Store.set('frameshift.reviewWorkspaceSeededNotes', true);
+    }
+    if (typeof AnnotationStore !== 'undefined') {
+      workspaceShots.slice(0, 10).forEach((shot, idx) => {
+        const existing = AnnotationStore.getNotes(shot.version).filter((n) => n.shot === shot.shot);
+        if (existing.length >= 2) return;
+        const need = 2 - existing.length;
+        for (let i = 0; i < need; i += 1) {
+          const frame = [54, 98, 125, 169][(idx + i) % 4];
+          AnnotationStore.add({
+            frame,
+            version: shot.version,
+            shot: shot.shot,
+            text: `Supervisor note for ${shot.shot} at frame ${frame}.`,
+            author: 'Sarah Connor',
+            role: 'supervisor',
+            type: i % 2 ? 'arrow' : 'circle',
+            color: shot.priority === 'high' ? '#EF4444' : '#3B82F6',
+            x: 30 + Math.round(Math.random() * 35),
+            y: 26 + Math.round(Math.random() * 40),
+            drawingPath: []
+          });
+        }
+      });
+    }
+    Store.set('frameshift.reviewWorkspaceState', state);
+  },
+
+  _versionNumber(tag) {
+    return Number(String(tag || '').replace(/[^\d]/g, '')) || 1;
+  },
+
+  _workspaceVersionsForShot(shot) {
+    const currentTag = shot?.version || 'v001';
+    const seeded = PipelineVersionStore.getVersions(shot.shot, currentTag).slice();
+    const sortedSeeded = seeded.slice().sort((a, b) => this._versionNumber(b.tag) - this._versionNumber(a.tag));
+    const hasInconsistentApproval = sortedSeeded.some((v, idx) =>
+      idx > 0
+      && v.status === 'approved'
+      && sortedSeeded.slice(0, idx).some((n) => n.status !== 'approved')
+    );
+    if (seeded.length <= 1 || hasInconsistentApproval) {
+      const currentNum = this._versionNumber(currentTag);
+      const statusMap = {
+        approved: ['approved', 'approved', 'approved', 'approved'],
+        revise: ['revise', 'needs_review', 'needs_review', 'needs_review'],
+        needs_review: ['needs_review', 'needs_review', 'revise', 'revise'],
+        failed: ['revise', 'revise', 'needs_review', 'needs_review'],
+        cache_ready: ['needs_review', 'needs_review', 'revise', 'revise'],
+        sim_running: ['needs_review', 'revise', 'revise', 'revise']
+      };
+      const plan = statusMap[shot.status] || ['needs_review', 'needs_review', 'revise', 'revise'];
+      const generated = Array.from({ length: 4 }, (_, idx) => {
+        const num = Math.max(1, currentNum - idx);
+        const tag = `v${String(num).padStart(3, '0')}`;
+        return {
+          tag,
+          updated: idx === 0 ? shot.updated : `${idx + 1}d ago`,
+          status: plan[idx] || plan[plan.length - 1],
+          media: this._workspaceFrameImage(tag, shot)
+        };
+      });
+      PipelineVersionStore.setVersions(shot.shot, generated);
+      return generated;
+    }
+    return seeded
+      .map((v) => ({ ...v, media: v.media || this._workspaceFrameImage(v.tag, shot) }))
+      .sort((a, b) => this._versionNumber(b.tag) - this._versionNumber(a.tag));
+  },
+
+  _workspaceFrameImage(versionTag, shot) {
+    const seed = `${shot?.shot || 'shot'}-${versionTag || 'v001'}`;
+    const palette = [
+      'https://images.unsplash.com/photo-1534447677768-be436bb09401?q=80&w=1600&auto=format&fit=crop',
+      'https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?q=80&w=1600&auto=format&fit=crop',
+      'https://images.unsplash.com/photo-1475688621402-4257c8128e58?q=80&w=1600&auto=format&fit=crop',
+      'https://images.unsplash.com/photo-1470290378698-263fa7ca90a1?q=80&w=1600&auto=format&fit=crop'
+    ];
+    let hash = 0;
+    for (let i = 0; i < seed.length; i += 1) hash = ((hash << 5) - hash) + seed.charCodeAt(i);
+    return palette[Math.abs(hash) % palette.length];
+  },
+
+  setWorkspaceShot(shot) {
+    this._stopWorkspacePlayback();
+    this.reviewWorkspaceState.selectedShot = shot;
+    this.reviewWorkspaceState.currentFrame = 1;
+    this.reviewWorkspaceState.selectedVersion = '';
+    this.reviewWorkspaceState.compareVersionTag = '';
+    this.reviewWorkspaceState.loopIn = 1;
+    this.reviewWorkspaceState.loopOut = 300;
+    this.reviewWorkspaceState.liveSession = this.reviewWorkspaceState.liveSession || {};
+    this.reviewWorkspaceState.liveSession.currentShot = shot;
+    Store.set('frameshift.reviewWorkspaceState', this.reviewWorkspaceState);
+    this._broadcastLiveState('frame');
+    this.renderReviewWorkspace();
+  },
+
+  focusWorkspaceNote(noteId, frame) {
+    this._enterWorkspaceFocusMode();
+    this.reviewWorkspaceState.focusedNoteId = noteId;
+    this.reviewWorkspaceState.activeSuggestionKeyword = '';
+    this.reviewWorkspaceState.activeTab = 'notes';
+    Store.set('frameshift.reviewWorkspaceState', this.reviewWorkspaceState);
+    if (typeof frame === 'number') this.scrubWorkspaceFrame(frame);
+    else this.renderReviewWorkspace();
+  },
+
+  _syncCompareState() {
+    const st = this.reviewWorkspaceState;
+    st.compareState = st.compareState || {};
+    st.compareState.enabled = !!(st.compareMode && st.compareMode !== 'off');
+    st.compareState.mode = st.compareMode || 'off';
+    st.compareState.baseVersion = st.selectedVersion || st.currentVersion || '';
+    st.compareState.compareVersion = st.compareVersionTag || '';
+    st.compareState.wipeX = Number(st.wipePosition || 50);
+    st.compareState.opacity = Number(st.compareOpacity || 0.45);
+  },
+
+  _liveNow() { return Date.now(); },
+
+  _initWorkspaceLiveSession() {
+    if (this._liveSessionInitialized) return;
+    this._liveSessionInitialized = true;
+    this._liveClientId = Store.get('frameshift.liveClientId', `u-${Math.random().toString(16).slice(2, 10)}`);
+    Store.set('frameshift.liveClientId', this._liveClientId);
+    this.reviewWorkspaceState.liveSession = this.reviewWorkspaceState.liveSession || { users: [], currentShot: '', currentFrame: 1, followMode: true };
+    this._liveUsers = this._liveUsers || {};
+    this._liveUsers[this._liveClientId] = {
+      id: this._liveClientId, name: User.current.name || 'Supervisor', role: User.current.role || 'supervisor',
+      color: '#A78BFA', currentShot: this.reviewWorkspaceState.selectedShot || '', currentFrame: this.reviewWorkspaceState.currentFrame || 1, onlineAt: this._liveNow()
+    };
+    try {
+      this._liveChannel = new BroadcastChannel('frameshift-live-review');
+      this._liveChannel.onmessage = (event) => this._onLiveMessage(event.data);
+    } catch (_) { this._liveChannel = null; }
+    const wsUrl = Store.get('frameshift.liveWsUrl', '');
+    if (wsUrl && typeof WebSocket !== 'undefined') {
+      try {
+        this._liveSocket = new WebSocket(wsUrl);
+        this._liveSocket.onmessage = (evt) => {
+          try { this._onLiveMessage(JSON.parse(evt.data)); } catch (_) { /* ignore */ }
+        };
+      } catch (_) { this._liveSocket = null; }
+    }
+    this._broadcastLiveState('presence');
+    this._liveHeartbeat = setInterval(() => {
+      this._broadcastLiveState('presence');
+      this._pruneLiveUsers();
+    }, 5000);
+  },
+
+  _pruneLiveUsers() {
+    const cutoff = this._liveNow() - 20000;
+    Object.keys(this._liveUsers || {}).forEach((id) => {
+      if (id === this._liveClientId) return;
+      if ((this._liveUsers[id]?.onlineAt || 0) < cutoff) delete this._liveUsers[id];
+    });
+    this.reviewWorkspaceState.liveSession.users = Object.values(this._liveUsers || {});
+  },
+
+  _broadcastLiveState(type = 'frame', extra = {}) {
+    const payload = {
+      type, source: this._liveClientId, ts: this._liveNow(),
+      user: { id: this._liveClientId, name: User.current.name || 'Supervisor', role: User.current.role || 'supervisor', color: '#A78BFA' },
+      shot: this.reviewWorkspaceState.selectedShot,
+      frame: this.reviewWorkspaceState.currentFrame,
+      playing: !!this.reviewWorkspaceState.isPlaying,
+      note: extra.note || null
+    };
+    if (this._liveChannel) this._liveChannel.postMessage(payload);
+    if (this._liveSocket && this._liveSocket.readyState === 1) this._liveSocket.send(JSON.stringify(payload));
+  },
+
+  _onLiveMessage(msg) {
+    if (!msg || msg.source === this._liveClientId) return;
+    this._liveUsers = this._liveUsers || {};
+    this._liveUsers[msg.source] = {
+      id: msg.source, name: msg.user?.name || 'Reviewer', role: msg.user?.role || 'supervisor', color: msg.user?.color || '#60A5FA',
+      currentShot: msg.shot || '', currentFrame: Number(msg.frame || 1), onlineAt: this._liveNow()
+    };
+    this._pruneLiveUsers();
+    this.reviewWorkspaceState.liveSession.users = Object.values(this._liveUsers || {});
+    if (msg.type === 'frame' && this.reviewWorkspaceState.liveSession.followMode && msg.shot === this.reviewWorkspaceState.selectedShot) {
+      this.reviewWorkspaceState.currentFrame = Number(msg.frame || this.reviewWorkspaceState.currentFrame || 1);
+      this._updateWorkspaceFrameUI() || this.renderReviewWorkspace();
+    } else if (msg.type === 'note') {
+      this.renderReviewWorkspace();
+    } else {
+      this._updateWorkspaceFrameUI();
+    }
+  },
+
+  toggleWorkspaceCompare() {
+    this.reviewWorkspaceState.compareMode = this.reviewWorkspaceState.compareMode === 'off' ? 'overlay' : 'off';
+    this._syncCompareState();
+    Store.set('frameshift.reviewWorkspaceState', this.reviewWorkspaceState);
+    this.renderReviewWorkspace();
+  },
+
+  toggleWorkspaceShotSelection(shot, checked, shiftKey = false) {
+    const visible = this._workspaceVisibleShots || [];
+    const set = new Set(this.reviewWorkspaceState.selectedShots || []);
+    if (shiftKey && this.reviewWorkspaceState.lastSelectedShot && visible.length) {
+      const start = visible.indexOf(this.reviewWorkspaceState.lastSelectedShot);
+      const end = visible.indexOf(shot);
+      if (start >= 0 && end >= 0) {
+        const [from, to] = start < end ? [start, end] : [end, start];
+        visible.slice(from, to + 1).forEach((id) => {
+          if (checked) set.add(id);
+          else set.delete(id);
+        });
+      }
+    } else {
+      if (checked) set.add(shot);
+      else set.delete(shot);
+    }
+    this.reviewWorkspaceState.selectedShots = Array.from(set);
+    this.reviewWorkspaceState.lastSelectedShot = shot;
+    Store.set('frameshift.reviewWorkspaceState', this.reviewWorkspaceState);
+    this.renderReviewWorkspace();
+  },
+
+  clearWorkspaceSelection() {
+    this.reviewWorkspaceState.selectedShots = [];
+    Store.set('frameshift.reviewWorkspaceState', this.reviewWorkspaceState);
+    this.renderReviewWorkspace();
+  },
+
+  selectAllWorkspaceShots() {
+    const queueFilter = this.reviewWorkspaceState.queueFilter || 'all';
+    const selected = this._workspaceShots()
+      .filter((s) => s.status !== 'approved')
+      .filter((s) => {
+        if (queueFilter === 'mine') return s.actor === User.current.name;
+        if (queueFilter === 'following') return s.priority === 'high' || s.status === 'failed';
+        return true;
+      })
+      .map((s) => s.shot);
+    this.reviewWorkspaceState.selectedShots = selected;
+    Store.set('frameshift.reviewWorkspaceState', this.reviewWorkspaceState);
+    this.renderReviewWorkspace();
+  },
+
+  scrubWorkspaceFrame(frame) {
+    this.reviewWorkspaceState.currentFrame = Math.max(1, Math.min(300, Number(frame) || 1));
+    this.reviewWorkspaceState.liveSession = this.reviewWorkspaceState.liveSession || {};
+    this.reviewWorkspaceState.liveSession.currentFrame = this.reviewWorkspaceState.currentFrame;
+    Store.set('frameshift.reviewWorkspaceState', this.reviewWorkspaceState);
+    this._broadcastLiveState('frame');
+    this._updateWorkspaceFrameUI() || this.renderReviewWorkspace();
+  },
+
+  openFloatingNoteInput(xPct, yPct, noteId = '') {
+    const prevDraftId = this.reviewWorkspaceState.floatingNoteAt?.noteId;
+    if (prevDraftId && typeof AnnotationStore !== 'undefined') {
+      AnnotationStore.notes = AnnotationStore.notes.filter((n) => !(n.id === prevDraftId && !String(n.text || '').trim() && (!Array.isArray(n.drawingPath) || n.drawingPath.length === 0)));
+      Store.set('frameshift.annotationNotes', AnnotationStore.notes);
+    }
+    this.reviewWorkspaceState.floatingNoteAt = { x: xPct, y: yPct, frame: this.reviewWorkspaceState.currentFrame, noteId };
+    if (noteId) this.reviewWorkspaceState.focusedNoteId = noteId;
+    this.reviewWorkspaceState.floatingNoteDraft = '';
+    Store.set('frameshift.reviewWorkspaceState', this.reviewWorkspaceState);
+    this.renderReviewWorkspace();
+    setTimeout(() => document.getElementById('sv-ws-floating-note')?.focus(), 0);
+  },
+
+  _enterWorkspaceFocusMode() {
+    const app = document.getElementById('supervisor-app');
+    if (!app || !app.classList.contains('sv-review-workspace-mode')) return;
+    app.classList.add('sv-review-focus');
+    clearTimeout(this._workspaceFocusTimer);
+    this._workspaceFocusTimer = setTimeout(() => {
+      app.classList.remove('sv-review-focus');
+    }, 1400);
+  },
+
+  onWorkspaceFrameClick(event) {
+    this._enterWorkspaceFocusMode();
+    const tool = (typeof ToolState !== 'undefined' ? ToolState.current : this.reviewWorkspaceState.activeTool) || 'pointer';
+    if (['arrow', 'box', 'circle'].includes(tool)) return;
+    const frame = event.currentTarget;
+    if (!frame) return;
+    const rect = frame.getBoundingClientRect();
+    const x = ((event.clientX - rect.left) / rect.width) * 100;
+    const y = ((event.clientY - rect.top) / rect.height) * 100;
+    const xPct = Math.max(2, Math.min(98, x));
+    const yPct = Math.max(2, Math.min(98, y));
+    const selected = this.shots.find((s) => s.shot === this.reviewWorkspaceState.selectedShot);
+    if (!selected || typeof AnnotationStore === 'undefined') return;
+    const created = AnnotationStore.add({
+      frame: this.reviewWorkspaceState.currentFrame,
+      version: this.reviewWorkspaceState.selectedVersion || selected.version,
+      shot: selected.shot,
+      text: '',
+      author: User.current.name || 'Supervisor',
+      role: 'supervisor',
+      status: 'open',
+      type: 'circle',
+      color: '#22C55E',
+      x: xPct,
+      y: yPct,
+      position: { x: xPct, y: yPct },
+      drawingPath: []
+    });
+    this.reviewWorkspaceState.focusedNoteId = created?.id || this.reviewWorkspaceState.focusedNoteId;
+    this._broadcastLiveState('note', { note: created ? { id: created.id, frame: created.frame, shot: created.shot, version: created.version } : null });
+    this.openFloatingNoteInput(xPct, yPct, created?.id || '');
+  },
+
+  onWorkspaceFloatingInput(event) {
+    this.reviewWorkspaceState.floatingNoteDraft = String(event.target.value || '');
+    Store.set('frameshift.reviewWorkspaceState', this.reviewWorkspaceState);
+  },
+
+  submitWorkspaceFloatingNote(event) {
+    if (event.key && event.key !== 'Enter') return;
+    event?.preventDefault?.();
+    const at = this.reviewWorkspaceState.floatingNoteAt;
+    if (!at) return;
+    const text = String(this.reviewWorkspaceState.floatingNoteDraft || '').trim();
+    if (!text) return;
+    const selected = this.shots.find((s) => s.shot === this.reviewWorkspaceState.selectedShot);
+    if (!selected || typeof AnnotationStore === 'undefined') return;
+    let created = null;
+    if (at.noteId) created = AnnotationStore.updateText(at.noteId, text);
+    if (!created) {
+      created = AnnotationStore.add({
+        frame: at.frame,
+        version: this.reviewWorkspaceState.selectedVersion || selected.version,
+        shot: selected.shot,
+        text,
+        author: User.current.name || 'Supervisor',
+        role: 'supervisor',
+        type: 'circle',
+        color: '#22C55E',
+        x: at.x,
+        y: at.y,
+        drawingPath: []
+      });
+    }
+    this.reviewWorkspaceState.floatingNoteAt = null;
+    this.reviewWorkspaceState.floatingNoteDraft = '';
+    this.reviewWorkspaceState.focusedNoteId = created?.id || this.reviewWorkspaceState.focusedNoteId;
+    Store.set('frameshift.reviewWorkspaceState', this.reviewWorkspaceState);
+    this._broadcastLiveState('note', { note: created ? { id: created.id, frame: created.frame, shot: created.shot, version: created.version } : null });
+    this.renderReviewWorkspace();
+  },
+
+  _workspacePointFromEvent(event) {
+    const canvas = event.currentTarget || this._workspaceCanvas;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    const x = (event.clientX - rect.left) / rect.width;
+    const y = (event.clientY - rect.top) / rect.height;
+    return {
+      x: Math.max(0, Math.min(1, x)),
+      y: Math.max(0, Math.min(1, y))
+    };
+  },
+
+  startWorkspaceDraw(event) {
+    this._enterWorkspaceFocusMode();
+    const tool = (typeof ToolState !== 'undefined' ? ToolState.current : this.reviewWorkspaceState.activeTool) || 'pointer';
+    if (!['arrow', 'box', 'circle'].includes(tool)) return;
+    const p = this._workspacePointFromEvent(event);
+    if (!p) return;
+    this._workspaceDrawing = {
+      tool,
+      start: p,
+      current: p,
+      points: [p]
+    };
+    this._workspaceIsDrawing = true;
+    event.preventDefault();
+  },
+
+  moveWorkspaceDraw(event) {
+    if (!this._workspaceIsDrawing || !this._workspaceDrawing) return;
+    const p = this._workspacePointFromEvent(event);
+    if (!p) return;
+    this._workspaceDrawing.current = p;
+    if (this._workspaceDrawing.tool === 'arrow') {
+      this._workspaceDrawing.points = [this._workspaceDrawing.start, p];
+    } else {
+      this._workspaceDrawing.points = [this._workspaceDrawing.start, p];
+    }
+    this._drawWorkspaceCanvas(this._workspaceDrawing);
+  },
+
+  endWorkspaceDraw() {
+    if (!this._workspaceIsDrawing || !this._workspaceDrawing) return;
+    this._workspaceIsDrawing = false;
+    const drawing = this._workspaceDrawing;
+    this._workspaceDrawing = null;
+    const points = drawing.points || [];
+    if (points.length < 2 || !drawing.start || !drawing.current) return;
+    const first = drawing.start;
+    const second = drawing.current;
+    const path = [first, second];
+    DrawTool.lastPath = path;
+    if (typeof ToolState !== 'undefined') ToolState.current = drawing.tool;
+    DrawTool.current = drawing.tool;
+    DrawTool.end(this.reviewWorkspaceState.currentFrame, path);
+  },
+
+  _drawWorkspaceCanvas(liveDrawing = null) {
+    const canvas = this._workspaceCanvas;
+    const ctx = this._workspaceCtx;
+    if (!canvas || !ctx) return;
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = Math.max(1, Math.floor(rect.width));
+    canvas.height = Math.max(1, Math.floor(rect.height));
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const selected = this.shots.find((s) => s.shot === this.reviewWorkspaceState.selectedShot);
+    if (!selected || typeof AnnotationStore === 'undefined') return;
+    const version = this.reviewWorkspaceState.selectedVersion || selected.version;
+    const frame = this.reviewWorkspaceState.currentFrame;
+    const hidden = new Set(this.reviewWorkspaceState.drawingHiddenNoteIds || []);
+    const frameNotes = AnnotationStore.getNotes(version).filter((n) =>
+      n.shot === selected.shot
+      && n.frame === frame
+      && Array.isArray((n.annotations?.[0]?.points) || n.drawingPath)
+      && (((n.annotations?.[0]?.points) || n.drawingPath).length > 1)
+      && !hidden.has(n.id)
+    );
+    const drawShape = (tool, points, color = '#22C55E') => {
+      if (!points.length) return;
+      const p1 = points[0];
+      const p2 = points[points.length - 1];
+      const x1 = p1.x * canvas.width;
+      const y1 = p1.y * canvas.height;
+      const x2 = p2.x * canvas.width;
+      const y2 = p2.y * canvas.height;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      if (tool === 'highlight') {
+        const x = Math.min(x1, x2);
+        const y = Math.min(y1, y2);
+        const w = Math.abs(x2 - x1);
+        const h = Math.abs(y2 - y1);
+        ctx.setLineDash([6, 4]);
+        ctx.strokeRect(x, y, w, h);
+        ctx.setLineDash([]);
+        return;
+      }
+      if (tool === 'circle') {
+        const cx = (x1 + x2) / 2;
+        const cy = (y1 + y2) / 2;
+        const rx = Math.abs(x2 - x1) / 2;
+        const ry = Math.abs(y2 - y1) / 2;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, Math.max(4, rx), Math.max(4, ry), 0, 0, Math.PI * 2);
+        ctx.stroke();
+        return;
+      }
+      if (tool === 'arrow') {
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+        const ang = Math.atan2(y2 - y1, x2 - x1);
+        const hl = 12;
+        ctx.beginPath();
+        ctx.moveTo(x2, y2);
+        ctx.lineTo(x2 - hl * Math.cos(ang - Math.PI / 6), y2 - hl * Math.sin(ang - Math.PI / 6));
+        ctx.moveTo(x2, y2);
+        ctx.lineTo(x2 - hl * Math.cos(ang + Math.PI / 6), y2 - hl * Math.sin(ang + Math.PI / 6));
+        ctx.stroke();
+        return;
+      }
+    };
+    frameNotes.forEach((n) => {
+      const ann = n.annotations?.[0];
+      const points = ann?.points || n.drawingPath || [];
+      drawShape((ann?.type || n.type || 'arrow') === 'box' ? 'highlight' : (ann?.type || n.type || 'arrow'), points, ann?.color || n.color || '#22C55E');
+    });
+    if (liveDrawing?.points?.length) {
+      const tool = liveDrawing.tool === 'box' ? 'highlight' : liveDrawing.tool;
+      drawShape(tool, liveDrawing.points, '#A78BFA');
+    }
+  },
+
+  undoWorkspaceDrawing() {
+    const selected = this.shots.find((s) => s.shot === this.reviewWorkspaceState.selectedShot);
+    if (!selected || typeof AnnotationStore === 'undefined') return;
+    const version = this.reviewWorkspaceState.selectedVersion || selected.version;
+    const frame = this.reviewWorkspaceState.currentFrame;
+    const candidates = AnnotationStore.notes
+      .filter((n) => n.shot === selected.shot && n.version === version && n.frame === frame && Array.isArray(n.drawingPath) && n.drawingPath.length > 1);
+    const last = candidates[candidates.length - 1];
+    if (!last) return;
+    AnnotationStore.notes = AnnotationStore.notes.filter((n) => n.id !== last.id);
+    Store.set('frameshift.annotationNotes', AnnotationStore.notes);
+    this._updateWorkspaceFrameUI() || this.renderReviewWorkspace();
+  },
+
+  _getWorkspaceFocusedResizableNote() {
+    const selected = this.shots.find((s) => s.shot === this.reviewWorkspaceState.selectedShot);
+    if (!selected || typeof AnnotationStore === 'undefined') return null;
+    const version = this.reviewWorkspaceState.selectedVersion || selected.version;
+    const frame = this.reviewWorkspaceState.currentFrame;
+    const id = this.reviewWorkspaceState.focusedNoteId;
+    if (!id) return null;
+    const note = AnnotationStore.getNotes(version).find((n) =>
+      n.id === id
+      && n.shot === selected.shot
+      && n.frame === frame
+      && Array.isArray((n.annotations?.[0]?.points) || n.drawingPath)
+      && (((n.annotations?.[0]?.points) || n.drawingPath).length > 1)
+      && ['highlight', 'circle'].includes(n.type)
+    );
+    return note || null;
+  },
+
+  _noteRectPct(note) {
+    const path = (note?.annotations?.[0]?.points) || note?.drawingPath || [];
+    if (!path.length) return null;
+    const p1 = path[0];
+    const p2 = path[path.length - 1];
+    const x1 = Math.min(p1.x, p2.x) * 100;
+    const y1 = Math.min(p1.y, p2.y) * 100;
+    const x2 = Math.max(p1.x, p2.x) * 100;
+    const y2 = Math.max(p1.y, p2.y) * 100;
+    return {
+      left: x1,
+      top: y1,
+      width: Math.max(1, x2 - x1),
+      height: Math.max(1, y2 - y1)
+    };
+  },
+
+  startAnnotationResize(noteId, handle, event) {
+    event.preventDefault();
+    event.stopPropagation();
+    const frameEl = this._workspaceFrameEl();
+    if (!frameEl) return;
+    const note = this._getWorkspaceFocusedResizableNote();
+    if (!note || note.id !== noteId) return;
+    const rect = frameEl.getBoundingClientRect();
+    const p1 = note.drawingPath[0];
+    const p2 = note.drawingPath[note.drawingPath.length - 1];
+    const x1 = Math.min(p1.x, p2.x);
+    const y1 = Math.min(p1.y, p2.y);
+    const x2 = Math.max(p1.x, p2.x);
+    const y2 = Math.max(p1.y, p2.y);
+    this._annotationResizeState = {
+      noteId,
+      handle,
+      frameRect: rect,
+      startPath: ((note.annotations?.[0]?.points) || note.drawingPath || []).map((p) => ({ ...p })),
+      startMouse: {
+        x: (event.clientX - rect.left) / rect.width,
+        y: (event.clientY - rect.top) / rect.height
+      },
+      startBounds: { x1, y1, x2, y2 }
+    };
+    const onMove = (e) => this._moveAnnotationResize(e);
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      this._annotationResizeState = null;
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  },
+
+  _moveAnnotationResize(event) {
+    const st = this._annotationResizeState;
+    if (!st || typeof AnnotationStore === 'undefined') return;
+    const nx = Math.max(0, Math.min(1, (event.clientX - st.frameRect.left) / st.frameRect.width));
+    const ny = Math.max(0, Math.min(1, (event.clientY - st.frameRect.top) / st.frameRect.height));
+    const dx = nx - st.startMouse.x;
+    const dy = ny - st.startMouse.y;
+    const minSize = 0.01;
+    const lockAspect = !!event.shiftKey;
+    const fromCenter = !!event.altKey;
+    const startW = Math.max(minSize, st.startBounds.x2 - st.startBounds.x1);
+    const startH = Math.max(minSize, st.startBounds.y2 - st.startBounds.y1);
+    const startRatio = startW / startH;
+    let { x1, y1, x2, y2 } = st.startBounds;
+
+    if (st.handle === 'move') {
+      const w = x2 - x1;
+      const h = y2 - y1;
+      x1 = Math.max(0, Math.min(1 - w, st.startBounds.x1 + dx));
+      y1 = Math.max(0, Math.min(1 - h, st.startBounds.y1 + dy));
+      x2 = x1 + w;
+      y2 = y1 + h;
+    } else {
+      if (fromCenter) {
+        const cx = (st.startBounds.x1 + st.startBounds.x2) / 2;
+        const cy = (st.startBounds.y1 + st.startBounds.y2) / 2;
+        if (st.handle.includes('w') || st.handle.includes('e')) {
+          const maxHalfW = Math.min(cx, 1 - cx);
+          const halfW = Math.max(minSize / 2, Math.min(maxHalfW, Math.abs(nx - cx)));
+          x1 = cx - halfW;
+          x2 = cx + halfW;
+        }
+        if (st.handle.includes('n') || st.handle.includes('s')) {
+          const maxHalfH = Math.min(cy, 1 - cy);
+          const halfH = Math.max(minSize / 2, Math.min(maxHalfH, Math.abs(ny - cy)));
+          y1 = cy - halfH;
+          y2 = cy + halfH;
+        }
+      } else {
+        if (st.handle.includes('n')) y1 = Math.min(y2 - minSize, ny);
+        if (st.handle.includes('s')) y2 = Math.max(y1 + minSize, ny);
+        if (st.handle.includes('w')) x1 = Math.min(x2 - minSize, nx);
+        if (st.handle.includes('e')) x2 = Math.max(x1 + minSize, nx);
+      }
+
+      if (lockAspect) {
+        const hasX = st.handle.includes('w') || st.handle.includes('e');
+        const hasY = st.handle.includes('n') || st.handle.includes('s');
+        let w = Math.max(minSize, x2 - x1);
+        let h = Math.max(minSize, y2 - y1);
+
+        if (hasX && hasY) {
+          if (Math.abs(dx) >= Math.abs(dy)) h = w / startRatio;
+          else w = h * startRatio;
+        } else if (hasX) {
+          h = w / startRatio;
+        } else if (hasY) {
+          w = h * startRatio;
+        }
+
+        const cx = fromCenter ? (x1 + x2) / 2 : (st.handle.includes('w') ? x2 : st.handle.includes('e') ? x1 : (x1 + x2) / 2);
+        const cy = fromCenter ? (y1 + y2) / 2 : (st.handle.includes('n') ? y2 : st.handle.includes('s') ? y1 : (y1 + y2) / 2);
+
+        if (fromCenter || !hasX) {
+          x1 = cx - (w / 2);
+          x2 = cx + (w / 2);
+        } else if (st.handle.includes('w')) {
+          x1 = x2 - w;
+        } else if (st.handle.includes('e')) {
+          x2 = x1 + w;
+        }
+
+        if (fromCenter || !hasY) {
+          y1 = cy - (h / 2);
+          y2 = cy + (h / 2);
+        } else if (st.handle.includes('n')) {
+          y1 = y2 - h;
+        } else if (st.handle.includes('s')) {
+          y2 = y1 + h;
+        }
+      }
+
+      x1 = Math.max(0, Math.min(1, x1));
+      y1 = Math.max(0, Math.min(1, y1));
+      x2 = Math.max(0, Math.min(1, x2));
+      y2 = Math.max(0, Math.min(1, y2));
+      if (x2 - x1 < minSize) x2 = Math.min(1, x1 + minSize);
+      if (y2 - y1 < minSize) y2 = Math.min(1, y1 + minSize);
+    }
+
+    const path = [{ x: x1, y: y1 }, { x: x2, y: y2 }];
+    AnnotationStore.updateDrawing(st.noteId, path, { x: x1 * 100, y: y1 * 100 });
+    this._updateWorkspaceFrameUI() || this.renderReviewWorkspace();
+  },
+
+  _bindWorkspaceAnnotationLayer() {
+    const canvas = document.getElementById('sv-ws-annotation-canvas');
+    if (!canvas) return;
+    this._workspaceCanvas = canvas;
+    this._workspaceCtx = canvas.getContext('2d');
+    canvas.onpointerdown = (e) => {
+      canvas.setPointerCapture?.(e.pointerId);
+      this.startWorkspaceDraw(e);
+    };
+    canvas.onpointermove = (e) => this.moveWorkspaceDraw(e);
+    canvas.onpointerup = () => this.endWorkspaceDraw();
+    canvas.onpointercancel = () => this.endWorkspaceDraw();
+    canvas.onpointerleave = () => this.endWorkspaceDraw();
+    const frameEl = this._workspaceFrameEl();
+    if (frameEl && !frameEl.dataset.focusBound) {
+      frameEl.dataset.focusBound = '1';
+      frameEl.addEventListener('mousemove', () => this._enterWorkspaceFocusMode());
+      frameEl.addEventListener('mouseenter', () => this._enterWorkspaceFocusMode());
+    }
+    this._drawWorkspaceCanvas();
+  },
+
+  _stopWorkspacePlayback() {
+    if (this._workspacePlaybackTimer) {
+      clearInterval(this._workspacePlaybackTimer);
+      this._workspacePlaybackTimer = null;
+    }
+    this.reviewWorkspaceState.isPlaying = false;
+    const app = document.getElementById('supervisor-app');
+    app?.classList.remove('sv-cinematic-play');
+  },
+
+  addWorkspaceNote() {
+    const input = document.getElementById('sv-ws-note-input');
+    const selected = this.shots.find((s) => s.shot === this.reviewWorkspaceState.selectedShot);
+    if (!selected || typeof AnnotationStore === 'undefined') return;
+    const text = String(input?.value || '').trim() || ' ';
+    const tool = (typeof ToolState !== 'undefined' ? ToolState.current : this.reviewWorkspaceState.activeTool) || 'pointer';
+    const at = this.reviewWorkspaceState.floatingNoteAt;
+    const xPos = at?.x ?? 50;
+    const yPos = at?.y ?? 50;
+    const created = AnnotationStore.add({
+      frame: this.reviewWorkspaceState.currentFrame,
+      version: this.reviewWorkspaceState.selectedVersion || selected.version,
+      shot: selected.shot,
+      text,
+      author: User.current.name || 'Supervisor',
+      role: 'supervisor',
+      type: tool === 'box' ? 'highlight' : tool === 'arrow' ? 'arrow' : 'circle',
+      drawingPath: DrawTool?.lastPath || [],
+      color: tool === 'arrow' ? '#EF4444' : tool === 'box' ? '#F59E0B' : '#22C55E',
+      x: xPos,
+      y: yPos,
+      position: { x: xPos, y: yPos }
+    });
+    this.reviewWorkspaceState.floatingNoteAt = null;
+    DrawTool?.reset?.();
+    Store.set('frameshift.reviewWorkspaceState', this.reviewWorkspaceState);
+    this._broadcastLiveState('note', { note: created ? { id: created.id, frame: created.frame, shot: created.shot, version: created.version } : null });
+    this.renderReviewWorkspace();
+  },
+
+  _isWorkspaceSelectedVersionApproved() {
+    const selected = this.reviewWorkspaceState.selectedShot;
+    const shot = this.shots.find((s) => s.shot === selected);
+    const selectedVersionTag = this.reviewWorkspaceState.selectedVersion || shot?.version;
+    if (!shot || !selectedVersionTag || typeof PipelineVersionStore === 'undefined') return false;
+    const selectedVersionMeta = PipelineVersionStore
+      .getVersions(shot.shot, selectedVersionTag)
+      .find((v) => v.tag === selectedVersionTag);
+    return selectedVersionMeta?.status === 'approved';
+  },
+
+  _timecodeFromFrame(frame) {
+    const f = Math.max(0, Number(frame) || 0);
+    const secs = Math.floor(f / 24);
+    return `00:${String(Math.floor(secs / 60)).padStart(2, '0')}:${String(secs % 60).padStart(2, '0')}`;
+  },
+
+  _workspaceRootId() {
+    return this.workspaceMountId || 'sv-review-workspace-view';
+  },
+
+  _workspaceRoot() {
+    return document.getElementById(this._workspaceRootId());
+  },
+
+  _workspaceFrameEl() {
+    const root = this._workspaceRoot();
+    return root ? root.querySelector('.review-frame') : null;
+  },
+
+  _computeWorkspaceInsights(notes, shotId) {
+    const analysis = analyzeNotes(notes || []);
+    const suggestions = generateSuggestions(analysis).map((s, i) => ({
+      ...s,
+      id: s.id || `ins-sg-${shotId}-${i}`,
+      type: 'suggestion'
+    }));
+    const hotspots = (analysis.clusteredFrames || []).slice(0, 4).map((h, idx) => ({
+      id: `ins-hot-${shotId}-${h.frame}-${idx}`,
+      frame: h.frame,
+      label: h.count >= 3 ? 'High note density hotspot' : 'Review attention cluster',
+      detail: h.notes.slice(0, 2).map((n) => n.text).filter(Boolean).join(' | ') || `${h.count} note(s) require attention.`,
+      severity: h.count >= 3 ? 'high' : 'medium',
+      relatedNoteIds: h.notes.map((n) => n.id).filter(Boolean),
+      keyword: ''
+    }));
+    return [...suggestions, ...hotspots].slice(0, 8);
+  },
+
+  _authorColor(name = 'User') {
+    const palette = ['#A78BFA', '#60A5FA', '#34D399', '#F59E0B', '#FB7185', '#22D3EE'];
+    let h = 0;
+    String(name).split('').forEach((ch) => { h = ((h << 5) - h) + ch.charCodeAt(0); h |= 0; });
+    return palette[Math.abs(h) % palette.length];
+  },
+
+  _updateWorkspaceFrameUI() {
+    const app = document.getElementById('supervisor-app');
+    if (!app || !app.classList.contains('sv-review-workspace-mode')) return false;
+    const root = this._workspaceRoot();
+    if (!root || root.classList.contains('is-hidden')) return false;
+    const frame = this.reviewWorkspaceState.currentFrame || 1;
+    const tc = root.querySelector('.review-timecode');
+    if (tc) tc.textContent = this._timecodeFromFrame(frame);
+    const slider = root.querySelector('.review-timeline input[type="range"]');
+    if (slider) slider.value = String(frame);
+    const playhead = root.querySelector('.review-timeline-playhead');
+    if (playhead) {
+      const pct = Math.max(0, Math.min(100, ((frame - 1) / 299) * 100));
+      playhead.style.left = `${pct}%`;
+    }
+    root.querySelectorAll('.sv-ws-tick').forEach((el) => {
+      const v = Number(el.textContent || 0);
+      el.classList.toggle('active', Math.abs(v - frame) <= 15);
+    });
+    root.querySelectorAll('.review-strip-frame').forEach((el, idx) => {
+      const f = 1 + (idx * 30);
+      el.classList.toggle('active', Math.abs(f - frame) < 15);
+    });
+    const selected = this.shots.find((s) => s.shot === this.reviewWorkspaceState.selectedShot);
+    const version = this.reviewWorkspaceState.selectedVersion || selected?.version || '';
+    const shotId = this.reviewWorkspaceState.selectedShot;
+    const notes = typeof AnnotationStore !== 'undefined'
+      ? AnnotationStore.getNotes(version).filter((n) => n.shot === shotId && n.frame === frame)
+      : [];
+    const overlay = root.querySelector('.review-overlay-layer');
+    if (overlay) {
+      overlay.innerHTML = notes.map((note, idx) => {
+        const rawX = note?.position?.x ?? note?.x ?? 45;
+        const rawY = note?.position?.y ?? note?.y ?? 45;
+        const x = rawX <= 1 ? rawX * 100 : rawX;
+        const y = rawY <= 1 ? rawY * 100 : rawY;
+        return `
+        <button class="sv-ws-overlay-note tone-${note.tone || 'medium'} ${this.reviewWorkspaceState.focusedNoteId === note.id ? 'active' : ''}" style="left:${x}%;top:${y}%;" title="${String(note.text || '').replace(/"/g, '&quot;')}" onclick="event.stopPropagation();SupervisorDashboard.focusWorkspaceNote('${note.id}', ${note.frame})">
+          <span class="dot"></span>
+        </button>
+      `;
+      }).join('');
+    }
+    root.querySelectorAll('.review-note-item').forEach((el) => {
+      const noteFrame = Number(el.getAttribute('data-frame') || 0);
+      el.classList.toggle('active', noteFrame === frame);
+    });
+    this._drawWorkspaceCanvas();
+    return true;
+  },
+
+  renderReviewWorkspace() {
+    const root = this._workspaceRoot();
+    if (!root) return;
+    if (typeof window.initReviewWorkspace === 'function') {
+      window.initReviewWorkspace(root);
+    }
+  },
+
   applyQueueFilter(filter) {
     this.currentFilter = filter;
     showToast('info', `Review Queue filter: ${String(filter).replace('-', ' ')}`);
@@ -1642,6 +2770,12 @@ const SupervisorDashboard = {
     const select = document.getElementById('sv-project-switcher');
     if (select) select.value = this.currentProject;
     this._normalizeShotActors();
+    if (this.currentView === 'review-workspace') {
+      document.body.classList.add('sidebar-collapsed');
+      if (typeof ShellLayout !== 'undefined' && !ShellLayout.isCollapsed()) {
+        ShellLayout.setCollapsed(true);
+      }
+    }
     if (!this._liveTimer) {
       this._liveTimer = setInterval(() => {
         this._liveSeconds = (this._liveSeconds + 1) % 3600;
@@ -1653,6 +2787,9 @@ const SupervisorDashboard = {
   }
 };
 window.SupervisorDashboard = SupervisorDashboard;
+window.setAppView = (view) => {
+  if (typeof SupervisorDashboard !== 'undefined') SupervisorDashboard.setView(view);
+};
 
 const SupervisorDashboardPalette = {
   activeIndex: 0,
@@ -2243,10 +3380,22 @@ window.DashboardActions = Dashboard;
 const ReviewSession = {
   shot: null,
   version: null,
+  queue: [],
+  index: 0,
+  currentVersion: '',
+  compareVersion: null,
+  compareMode: 'off',
 
   start(shot, version) {
     this.shot = shot;
     this.version = version;
+    this.currentVersion = version;
+    this.compareVersion = null;
+    this.compareMode = 'off';
+    this.queue = (typeof SupervisorDashboard !== 'undefined')
+      ? SupervisorDashboard._workspaceShots().map((s) => s.shot)
+      : [];
+    this.index = Math.max(0, this.queue.indexOf(shot));
     Player.seek(0);
     Player.pause(Player._playButton());
     renderNotes();
@@ -2257,9 +3406,109 @@ const ReviewSession = {
     const notes = AnnotationStore.forVersion(version);
     renderNotes();
     return notes;
+  },
+
+  nextShot() {
+    if (!this.queue.length) return null;
+    this.index = (this.index + 1) % this.queue.length;
+    this.shot = this.queue[this.index];
+    if (typeof SupervisorDashboard !== 'undefined') SupervisorDashboard.setWorkspaceShot(this.shot);
+    return this.shot;
+  },
+
+  prevShot() {
+    if (!this.queue.length) return null;
+    this.index = (this.index - 1 + this.queue.length) % this.queue.length;
+    this.shot = this.queue[this.index];
+    if (typeof SupervisorDashboard !== 'undefined') SupervisorDashboard.setWorkspaceShot(this.shot);
+    return this.shot;
+  },
+
+  setCompare(mode, compareVersion = null) {
+    this.compareMode = mode || 'off';
+    this.compareVersion = compareVersion;
   }
 };
 window.ReviewSession = ReviewSession;
+
+const PipelineVersionStore = {
+  key: 'frameshift.pipelineVersions',
+  data: Store.get('frameshift.pipelineVersions', {}),
+  _ensureShot(shotId, fallbackVersion = 'v001') {
+    if (!this.data[shotId]) {
+      this.data[shotId] = [
+        { tag: fallbackVersion, status: 'needs_review', updated: 'Just now', media: '' }
+      ];
+      Store.set(this.key, this.data);
+    }
+    return this.data[shotId];
+  },
+  getVersions(shotId, fallbackVersion = 'v001') {
+    return this._ensureShot(shotId, fallbackVersion);
+  },
+  setStatus(shotId, tag, status) {
+    const versions = this._ensureShot(shotId, tag || 'v001');
+    const target = versions.find((v) => v.tag === tag);
+    if (target) target.status = status;
+    Store.set(this.key, this.data);
+  },
+  setVersions(shotId, versions) {
+    this.data[shotId] = versions;
+    Store.set(this.key, this.data);
+  }
+};
+window.PipelineVersionStore = PipelineVersionStore;
+
+const DrawTool = {
+  current: 'pointer',
+  lastPath: [],
+  set(tool) {
+    this.current = tool;
+    if (typeof ToolState !== 'undefined') ToolState.current = tool;
+  },
+  end(frame = 1, points = null) {
+    const path = Array.isArray(points) && points.length
+      ? points
+      : Array.isArray(this.lastPath) && this.lastPath.length > 1
+        ? this.lastPath
+        : [];
+    if (!path.length || typeof SupervisorDashboard === 'undefined' || typeof AnnotationStore === 'undefined') return;
+    const selected = SupervisorDashboard.shots?.find((s) => s.shot === SupervisorDashboard.reviewWorkspaceState?.selectedShot);
+    if (!selected) return;
+    const tool = (typeof ToolState !== 'undefined' ? ToolState.current : this.current) || 'pointer';
+    const first = path[0];
+    const created = AnnotationStore.add({
+      frame: Number(frame) || SupervisorDashboard.reviewWorkspaceState.currentFrame || 1,
+      version: SupervisorDashboard.reviewWorkspaceState.selectedVersion || selected.version,
+      shot: selected.shot,
+      drawing: path,
+      drawingPath: path,
+      text: '',
+      author: User.current.name || 'Supervisor',
+      role: 'supervisor',
+      type: tool === 'box' ? 'highlight' : tool === 'arrow' ? 'arrow' : 'circle',
+      color: tool === 'arrow' ? '#EF4444' : tool === 'box' ? '#F59E0B' : '#22C55E',
+      x: (first?.x ?? 0.5) * 100,
+      y: (first?.y ?? 0.5) * 100,
+      position: { x: (first?.x ?? 0.5) * 100, y: (first?.y ?? 0.5) * 100 }
+    });
+    SupervisorDashboard.openFloatingNoteInput((first?.x ?? 0.5) * 100, (first?.y ?? 0.5) * 100, created?.id || '');
+    this.reset();
+  },
+  reset() {
+    this.lastPath = [];
+  }
+};
+window.DrawTool = DrawTool;
+const ToolState = { current: DrawTool.current || 'pointer' };
+window.ToolState = ToolState;
+
+const Compare = {
+  toggle() {
+    if (typeof SupervisorDashboard !== 'undefined') SupervisorDashboard.toggleWorkspaceCompare();
+  }
+};
+window.Compare = Compare;
 
 function renderFrame(frame) {
   Player.frame = Math.max(0, Math.min(frame, Player.duration));
@@ -3319,8 +4568,8 @@ const ArtistBehavior = {
 
 /* ── Wire sidebar nav to also update visual active state ── */
 function updateSidebarActive(tabName) {
-  const map = { dashboard:'nav-dashboard', overview:'nav-tasks', versions:'nav-versions', notes:'nav-notes' };
-  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  const map = { dashboard:'nav-dashboard', overview:'nav-tasks', versions:'nav-shots', notes:'nav-shots' };
+  document.querySelectorAll('.artist-app .nav-item, .artist-app .sv-nav-item').forEach(n => n.classList.remove('active'));
   const target = document.getElementById(map[tabName] || 'nav-dashboard');
   if (target) target.classList.add('active');
 }
@@ -3508,15 +4757,71 @@ const AnnotationStore = {
     ],
   },
 
+  _normalizeNote(note, versionHint = 'v001') {
+    const version = note.version || versionHint;
+    const status = note.status || (note.resolved ? 'resolved' : 'open');
+    const legacyPath = Array.isArray(note.drawingPath) ? note.drawingPath : (Array.isArray(note.drawing) ? note.drawing : []);
+    const annotations = Array.isArray(note.annotations)
+      ? note.annotations
+      : (legacyPath.length ? [{
+        type: note.type || 'draw',
+        points: legacyPath,
+        color: note.color || '#22C55E',
+        createdAt: note.createdAt || Date.now()
+      }] : []);
+    return {
+      id: note.id || `note-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
+      shot: note.shot || note.task || 'SH_0000',
+      version,
+      frame: note.frame ?? 0,
+      text: note.text || '',
+      author: note.author || 'Unknown',
+      resolved: status === 'resolved',
+      status,
+      replies: Array.isArray(note.replies) ? note.replies : [],
+      role: note.role || 'supervisor',
+      initials: note.initials || String(note.author || 'U').split(' ').map((p) => p[0]).join('').slice(0, 2),
+      time: note.time || note.createdAgo || 'Just now',
+      annotations,
+      drawingPath: legacyPath,
+      drawing: legacyPath,
+      x: note.x ?? note.position?.x ?? 45,
+      y: note.y ?? note.position?.y ?? 45,
+      position: note.position || { x: note.x ?? 45, y: note.y ?? 45 }
+    };
+  },
   get(version)         { return this.annotations[version] || []; },
   forVersion(version) {
     return [
-      ...(this.notesByVersion[version] || []),
-      ...this.notes.filter(n => n.version === version)
-    ];
+      ...(this.notesByVersion[version] || []).map((n) => this._normalizeNote(n, version)),
+      ...this.notes.filter(n => n.version === version).map((n) => this._normalizeNote(n, version))
+    ].sort((a, b) => (a.frame ?? 0) - (b.frame ?? 0));
   },
   getNotes(version)    { return this.forVersion(version); },
-  forFrame(version, f) { return this.get(version).filter(a => a.frame === f); },
+  forFrame(version, f) {
+    const seeded = this.get(version).filter(a => a.frame === f);
+    const fromNotes = this.getNotes(version)
+      .filter((n) => n.frame === f && Array.isArray(n.drawingPath) && n.drawingPath.length > 1)
+      .map((n) => {
+        const p1 = n.drawingPath[0];
+        const p2 = n.drawingPath[n.drawingPath.length - 1];
+        return {
+          id: n.id,
+          frame: n.frame,
+          shape: n.type || 'circle',
+          x: p1?.x ?? 0.5,
+          y: p1?.y ?? 0.5,
+          x1: p1?.x ?? 0.5,
+          y1: p1?.y ?? 0.5,
+          x2: p2?.x ?? p1?.x ?? 0.5,
+          y2: p2?.y ?? p1?.y ?? 0.5,
+          color: n.color || '#22C55E',
+          label: n.text || 'Annotation note',
+          author: n.author
+        };
+      });
+    return [...seeded, ...fromNotes];
+  },
   notesForFrame(v, f)  { return this.getNotes(v).filter(n => n.frame === f); },
   getByFrame(frame, version) {
     return this.notes.filter(n =>
@@ -3525,27 +4830,20 @@ const AnnotationStore = {
   },
   add(annotation) {
     const version = annotation.version || VersionStore.activeVersion;
-    if (!this.annotations[version]) this.annotations[version] = [];
-    this.annotations[version].push({
-      id: annotation.id || 'sup-ann-' + Date.now(),
-      frame: annotation.frame,
-      shape: annotation.type || annotation.shape || 'circle',
-      x: annotation.x ?? 0.45,
-      y: annotation.y ?? 0.35,
-      r: annotation.r ?? 0.06,
-      w: annotation.w ?? 0.22,
-      h: annotation.h ?? 0.16,
-      x1: annotation.x1 ?? 0.66,
-      y1: annotation.y1 ?? 0.30,
-      x2: annotation.x2 ?? 0.48,
-      y2: annotation.y2 ?? 0.46,
-      color: annotation.color || '#F59E0B',
-      label: annotation.text || 'Supervisor note',
-      author: User.current.name,
-      role: User.current.role
-    });
-    const note = {
+    const rawPath = Array.isArray(annotation.drawingPath)
+      ? annotation.drawingPath
+      : (Array.isArray(annotation.drawing) ? annotation.drawing : []);
+    const annotations = Array.isArray(annotation.annotations)
+      ? annotation.annotations
+      : (rawPath.length ? [{
+        type: annotation.type || 'draw',
+        points: rawPath,
+        color: annotation.color || '#22C55E',
+        createdAt: Date.now()
+      }] : []);
+    const note = this._normalizeNote({
       id:'sup-note-' + Date.now(),
+      shot: annotation.shot || 'SH_0000',
       version,
       frame: annotation.frame,
       role:'supervisor',
@@ -3553,10 +4851,76 @@ const AnnotationStore = {
       initials:User.current.name.split(' ').map(p=>p[0]).join('').slice(0,2),
       text:annotation.text || 'Supervisor annotation',
       time:'Just now',
-      resolved:false
-    };
+      resolved:false,
+      status: 'open',
+      replies: [],
+      annotations,
+      drawingPath: rawPath,
+      x: annotation.x ?? 45,
+      y: annotation.y ?? 45,
+      position: { x: annotation.x ?? 45, y: annotation.y ?? 45 }
+    }, version);
     this.notes.push(note);
     Store.set('frameshift.annotationNotes', this.notes);
+    return note;
+  },
+  getNoteById(noteId) {
+    const fromSeed = Object.values(this.notesByVersion || {})
+      .flat()
+      .find((n) => n.id === noteId);
+    if (fromSeed) return this._normalizeNote(fromSeed, fromSeed.version || 'v001');
+    const dynamic = this.notes.find((n) => n.id === noteId);
+    return dynamic ? this._normalizeNote(dynamic, dynamic.version || 'v001') : null;
+  },
+  _updateDynamicNote(noteId, updater) {
+    const idx = this.notes.findIndex((n) => n.id === noteId);
+    if (idx >= 0) {
+      const next = updater(this._normalizeNote(this.notes[idx], this.notes[idx].version || 'v001'));
+      this.notes[idx] = this._normalizeNote(next, next.version || this.notes[idx].version || 'v001');
+      Store.set('frameshift.annotationNotes', this.notes);
+      return this.notes[idx];
+    }
+    const seeded = this.getNoteById(noteId);
+    if (!seeded) return null;
+    const next = updater(seeded);
+    this.notes.unshift(this._normalizeNote(next, next.version || seeded.version || 'v001'));
+    Store.set('frameshift.annotationNotes', this.notes);
+    return this.notes[0];
+  },
+  toggleResolved(noteId) {
+    return this._updateDynamicNote(noteId, (n) => {
+      const resolved = !n.resolved;
+      return { ...n, resolved, status: resolved ? 'resolved' : 'open' };
+    });
+  },
+  addReply(noteId, text, author = 'Supervisor') {
+    return this._updateDynamicNote(noteId, (n) => ({
+      ...n,
+      replies: [...(n.replies || []), { id: `r-${Date.now()}`, text, author, time: 'Just now' }]
+    }));
+  },
+  updateDrawing(noteId, drawingPath, position = null) {
+    return this._updateDynamicNote(noteId, (n) => ({
+      ...n,
+      annotations: [{
+        type: n.type || 'draw',
+        points: drawingPath,
+        color: n.color || '#22C55E',
+        createdAt: Date.now()
+      }],
+      drawingPath,
+      drawing: drawingPath,
+      position: position || n.position,
+      x: position?.x ?? n.x,
+      y: position?.y ?? n.y
+    }));
+  },
+  updateText(noteId, text) {
+    return this._updateDynamicNote(noteId, (n) => ({
+      ...n,
+      text: String(text || '').trim(),
+      time: 'Just now'
+    }));
   },
   allFrames(version)   {
     const af = new Set(this.get(version).map(a => a.frame));
@@ -4522,3 +5886,1246 @@ const ReviewMode = {
   },
 };
 window.ReviewMode = ReviewMode;
+
+/**
+ * Workspace-only integration entrypoint.
+ * Mounts the review workspace inside a provided container without topbar/sidebar shells.
+ * @param {HTMLElement} container
+ * @param {{ treatAsSupervisor?: boolean }} [options] Pass `{ treatAsSupervisor: true }` for standalone demos so Resolve/Revise match supervisor UX without mutating stored user role.
+ */
+function initReviewWorkspace(container, options = {}) {
+  if (!container) return;
+  const rwTreatAsSupervisor = options.treatAsSupervisor === true;
+  container.classList.add('review-workspace-host');
+  container.innerHTML = '<div id="review-root"></div>';
+  const root = container.querySelector('#review-root');
+  if (!root) return;
+
+  root.innerHTML = `
+    <div class="review-workspace">
+      <aside class="review-left">
+        <div class="left-head">
+          <div class="left-title-row"><div class="left-title">Review Workspace</div></div>
+          <div class="shot-queue-row">
+            <div class="ttl">Shot Queue</div>
+            <div class="pill" id="queueCount">0</div>
+            <div class="completed" id="completedLbl">0 of 0 completed</div>
+          </div>
+          <div class="left-tabs">
+            <button class="tab active" data-tab="all">All Shots</button>
+            <button class="tab" data-tab="mine">My Reviews</button>
+            <button class="tab" data-tab="follow">Following</button>
+          </div>
+          <div class="left-search">
+            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+            <input id="leftSearch" placeholder="Search shots..." />
+            <button class="filter-btn" title="Filters">
+              <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M6 12h12M10 18h4"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="shot-list" id="shotList"></div>
+      </aside>
+
+      <section class="review-center">
+        <div class="shot-header">
+          <div class="sh-left">
+            <div class="sh-title-row">
+              <h2 id="shotTitle">SH_0102</h2>
+              <span class="sub" id="shotSub">Debris Burst Simulation</span>
+              <span class="tag priority-high">High Priority</span>
+            </div>
+            <div class="sh-meta-row" id="shotMeta"></div>
+          </div>
+          <div class="sh-right">
+            <div class="nav-pair">
+              <button id="prevShot">
+                <svg class="icon-sm arr" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M15 18l-6-6 6-6"/></svg>
+                <div style="display:flex;flex-direction:column;line-height:1.15;align-items:flex-start">
+                  <span class="lbl">Prev</span>
+                  <b id="prevShotLbl">SH_0101</b>
+                </div>
+              </button>
+              <button id="nextShot">
+                <div style="display:flex;flex-direction:column;line-height:1.15;align-items:flex-end">
+                  <span class="lbl">Next</span>
+                  <b id="nextShotLbl">SH_0103</b>
+                </div>
+                <svg class="icon-sm arr" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 18l6-6-6-6"/></svg>
+              </button>
+            </div>
+            <button class="btn" id="compareToggle">Compare</button>
+            <button class="btn">Fit</button>
+            <button class="btn icon-only" title="Fullscreen">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9V3h6M21 9V3h-6M3 15v6h6M21 15v6h-6"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="review-viewer">
+          <div class="viewer-stage" id="viewerStage">
+            <video class="video-canvas" id="videoCanvas" muted playsinline preload="auto"></video>
+            <video class="video-canvas" id="compareCanvas" muted playsinline preload="auto" style="display:none;"></video>
+            <canvas class="annotation-layer tool-pointer" id="annLayer"></canvas>
+            <div class="callouts" id="calloutHost"></div>
+            <div class="v-current-tag"><b id="vCurrentLbl">v012</b><span class="lbl">Current</span></div>
+            <div class="live-tag"><span class="pulse"></span>Following Live</div>
+            <div class="ann-toolbar">
+              <button class="ann-tool active" data-tool="pointer">Pointer</button>
+              <button class="ann-tool" data-tool="draw">Draw</button>
+              <button class="ann-tool" data-tool="arrow">Arrow</button>
+              <button class="ann-tool" data-tool="rect">Box</button>
+              <button class="ann-tool" data-tool="circle">Circle</button>
+              <button class="ann-tool" data-tool="text">Text</button>
+            </div>
+            <div class="float-input" id="floatInput">
+              <textarea id="floatText" placeholder="Type your note..."></textarea>
+              <div class="row">
+                <button class="btn ghost" id="floatCancel">Cancel</button>
+                <button class="btn primary" id="floatSave">Save</button>
+              </div>
+            </div>
+          </div>
+          <div class="player-controls">
+            <div class="player-time">
+              <span id="tcDisplay">00:00:04:02</span>
+              <span class="player-frame" id="frameLbl">98/240</span>
+            </div>
+            <div class="player-mid">
+              <button class="pbtn" id="btnFirst" title="First frame"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M5 4v16h2V4zM21 4l-12 8 12 8z"/></svg></button>
+              <button class="pbtn" id="btnPrev" title="Prev frame"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 5L8 12l11 7zM6 5h2v14H6z"/></svg></button>
+              <button class="pbtn play" id="btnPlay" title="Play"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4v16l13-8z"/></svg></button>
+              <button class="pbtn" id="btnNext" title="Next frame"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M5 5l11 7-11 7zM16 5h2v14h-2z"/></svg></button>
+              <button class="pbtn" id="btnLast" title="Last frame"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 4l12 8-12 8zM17 4h2v16h-2z"/></svg></button>
+            </div>
+            <div class="player-right">
+              <span class="fps-tag">24 FPS</span>
+              <div class="vol-row">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--t3)"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19 5a9 9 0 0 1 0 14M16 9a5 5 0 0 1 0 6"/></svg>
+                <div class="vol-track"><div class="vol-fill"></div><div class="vol-handle"></div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="timeline-wrap">
+          <div class="tc-ruler" id="tcRuler"></div>
+          <input type="range" id="timelineInput" min="1" max="240" value="98" />
+          <div class="frame-strip" id="frameStrip"></div>
+        </div>
+
+        <div class="versions-wrap">
+          <div class="versions-label">Versions</div>
+          <div class="versions-row" id="versionsRow"></div>
+        </div>
+      </section>
+
+      <aside class="review-right">
+        <div class="right-tabs">
+          <div class="rtab active" data-rtab="notes">Notes <span class="badge" id="notesCountBadge">0</span></div>
+          <div class="rtab" data-rtab="versions">Versions <span class="badge">0</span></div>
+          <div class="rtab" data-rtab="info">Info</div>
+        </div>
+        <div class="filter-row">
+          <div class="filter-tabs">
+            <button class="active" data-filter="open">Open</button>
+            <button data-filter="resolved">Resolved</button>
+            <button data-filter="all">All</button>
+          </div>
+        </div>
+        <div class="notes-meta">
+          <div class="left"><span class="vname" id="activeVersionLbl">v012</span><span id="openCount">0 Open</span></div>
+        </div>
+        <div class="notes-list" id="notesList"></div>
+        <div class="review-action">
+          <div class="ra-label">Review Action</div>
+          <div class="ra-row">
+            <button class="ra-btn approve">Approve</button>
+            <button class="ra-btn revise">Request Changes</button>
+            <button class="ra-btn skip">Skip</button>
+          </div>
+          <div class="ra-next"><span class="dot"></span>Send to next: <b id="nextShotLbl2">SH_0103</b></div>
+        </div>
+      </aside>
+    </div>
+  `;
+
+  const state = {
+    fps: 24,
+    duration: 240,
+    currentFrame: 98,
+    playing: false,
+    timer: null,
+    shotFilter: 'all',
+    noteFilter: 'open',
+    tool: 'pointer',
+    rightTab: 'notes',
+    focusedNote: null,
+    hoveredNote: null,
+    compare: false,
+    selectedShot: 0,
+    selectedVersion: 0,
+    shots: [
+      { id: 'SH_0102', task: 'Debris Burst Simulation', artist: 'Maya Patel', when: '2h ago', status: 'review', section: 'CURRENT', versions: [{ v: 'v012', status: 'current', when: '2h ago' }, { v: 'v011', status: 'revise', when: '1 day ago' }, { v: 'v010', status: 'revise', when: '2 days ago' }, { v: 'v009', status: 'revise', when: '4 days ago' }], image: 'https://images.unsplash.com/photo-1462331940025-496dfbfc7564?auto=format&fit=crop&w=1920&q=70', video: 'https://cdn.coverr.co/videos/coverr-black-sand-spreading-over-the-ground-1579/1080p.mp4', compareVideo: 'https://cdn.coverr.co/videos/coverr-close-up-shot-of-burning-charcoal-1577/1080p.mp4' },
+      { id: 'SH_0105', task: 'Pyro Smoke Pass', artist: 'Maya Patel', when: '5h ago', status: 'progress', section: 'UP NEXT', versions: [{ v: 'v007', status: 'current', when: '5h ago' }, { v: 'v006', status: 'revise', when: '1 day ago' }, { v: 'v005', status: 'revise', when: '3 days ago' }], image: 'https://images.unsplash.com/photo-1475274222690-a8f9b60a6f38?auto=format&fit=crop&w=1920&q=70', video: 'https://cdn.coverr.co/videos/coverr-smoke-in-the-air-1578/1080p.mp4', compareVideo: 'https://cdn.coverr.co/videos/coverr-burning-fire-1569/1080p.mp4' },
+      { id: 'SH_0110', task: 'Fire Blast Simulation', artist: 'Maya Patel', when: 'Yesterday', status: 'progress', section: 'OTHER ASSIGNED', versions: [{ v: 'v003', status: 'current', when: 'Yesterday' }, { v: 'v002', status: 'revise', when: '2 days ago' }], image: 'https://images.unsplash.com/photo-1578662996442-48f60103fc96?auto=format&fit=crop&w=1920&q=70', video: 'https://cdn.coverr.co/videos/coverr-blazing-fire-1570/1080p.mp4', compareVideo: 'https://cdn.coverr.co/videos/coverr-bonfire-at-night-1573/1080p.mp4' },
+      { id: 'SH_0115', task: 'Ember Pass', artist: 'Maya Patel', when: 'Yesterday', status: 'progress', section: 'OTHER ASSIGNED', versions: [{ v: 'v005', status: 'current', when: 'Yesterday' }, { v: 'v004', status: 'revise', when: '2 days ago' }], image: 'https://images.unsplash.com/photo-1462331940025-496dfbfc7564?auto=format&fit=crop&w=1920&q=70', video: 'https://cdn.coverr.co/videos/coverr-glowing-embers-1572/1080p.mp4', compareVideo: 'https://cdn.coverr.co/videos/coverr-burning-coals-1571/1080p.mp4' },
+      { id: 'SH_0120', task: 'Lighting & Comp', artist: 'Maya Patel', when: '2 days ago', status: 'progress', section: 'OTHER ASSIGNED', versions: [{ v: 'v002', status: 'current', when: '2 days ago' }, { v: 'v001', status: 'revise', when: '4 days ago' }], image: 'https://images.unsplash.com/photo-1475274222690-a8f9b60a6f38?auto=format&fit=crop&w=1920&q=70', video: 'https://cdn.coverr.co/videos/coverr-planet-earth-in-space-1580/1080p.mp4', compareVideo: 'https://cdn.coverr.co/videos/coverr-stars-in-space-1581/1080p.mp4' }
+    ],
+    notes: [
+      { id: 'n1', shot: 'SH_0102', version: 'v012', frame: 98, x: 18, y: 62, text: 'Supervisor note for SH_0429 at frame 98.', author: 'Maya Patel', initials: 'MP', color: 'p', resolved: false, annotations: [{ type: 'arrow', points: [{ x: 0.22, y: 0.58 }, { x: 0.33, y: 0.48 }], color: 'p' }] },
+      { id: 'n2', shot: 'SH_0102', version: 'v012', frame: 125, x: 62, y: 32, text: 'Supervisor note for SH_0429 at frame 125.', author: 'Maya Patel', initials: 'MP', color: 'y', resolved: false, annotations: [{ type: 'circle', x: 0.56, y: 0.24, w: 0.14, h: 0.2, color: 'y' }] },
+      { id: 'n3', shot: 'SH_0102', version: 'v011', frame: 82, x: 34, y: 57, text: 'Previous pass had noisy edge breakup here.', author: 'Maya Patel', initials: 'MP', color: 'b', resolved: true, resolvedBySupervisor: false, annotations: [{ type: 'rect', x: 0.29, y: 0.5, w: 0.11, h: 0.16, color: 'b' }] },
+      { id: 'n4', shot: 'SH_0102', version: 'v011', frame: 110, x: 58, y: 41, text: 'Debris timing was late by 3 frames.', author: 'Maya Patel', initials: 'MP', color: 'o', resolved: true, resolvedBySupervisor: false, annotations: [{ type: 'arrow', points: [{ x: 0.52, y: 0.46 }, { x: 0.61, y: 0.39 }], color: 'o' }] },
+      { id: 'n5', shot: 'SH_0102', version: 'v010', frame: 64, x: 25, y: 48, text: 'Fire core lacked intensity in this section.', author: 'Maya Patel', initials: 'MP', color: 'r', resolved: true, resolvedBySupervisor: false, annotations: [{ type: 'circle', x: 0.2, y: 0.4, w: 0.12, h: 0.2, color: 'r' }] }
+    ]
+  };
+  // Seed complete historical feedback so previous versions always carry notes/annotations.
+  // This mirrors real review iteration: older versions have more notes, current has fewer unresolved notes.
+  (() => {
+    const palette = ['p', 'y', 'b', 'o', 'r'];
+    const templates = [
+      { text: 'Edge breakup and shape continuity need cleanup.', annotation: (x, y, c) => ({ type: 'rect', x: Math.max(0.05, x - 0.06), y: Math.max(0.05, y - 0.07), w: 0.12, h: 0.14, color: c }) },
+      { text: 'Timing is late relative to plate action.', annotation: (x, y, c) => ({ type: 'arrow', points: [{ x: Math.max(0.08, x - 0.07), y: Math.max(0.08, y - 0.06) }, { x, y }], color: c }) },
+      { text: 'Energy/intensity feels low in this beat.', annotation: (x, y, c) => ({ type: 'circle', x: Math.max(0.05, x - 0.06), y: Math.max(0.05, y - 0.07), w: 0.13, h: 0.16, color: c }) }
+    ];
+    const existing = new Set(state.notes.map((n) => `${n.shot}::${n.version}`));
+    let seedId = 1000;
+    state.shots.forEach((shot) => {
+      shot.versions.forEach((ver, vi) => {
+        const key = `${shot.id}::${ver.v}`;
+        if (existing.has(key)) return;
+        const count = Math.max(1, Math.min(3, shot.versions.length - vi));
+        for (let i = 0; i < count; i += 1) {
+          const tpl = templates[i % templates.length];
+          const color = palette[(vi + i) % palette.length];
+          const frame = Math.min(state.duration, 28 + vi * 22 + i * 18);
+          const x = Math.min(0.88, 0.22 + 0.15 * i + 0.03 * vi);
+          const y = Math.min(0.84, 0.3 + 0.12 * i + 0.02 * (vi % 3));
+          state.notes.push({
+            id: `n${seedId++}`,
+            shot: shot.id,
+            version: ver.v,
+            frame,
+            x: Math.round(x * 100),
+            y: Math.round(y * 100),
+            text: tpl.text,
+            author: shot.artist,
+            initials: shot.artist.split(' ').map((p) => p[0]).join('').slice(0, 2).toUpperCase(),
+            color,
+            resolved: ver.status !== 'current',
+            resolvedBySupervisor: false,
+            repliesData: ver.status !== 'current'
+              ? [{ author: 'Alex Chen', initials: 'AC', color: 'b', text: 'Addressed in next publish.', when: '1h later' }]
+              : [],
+            annotations: [tpl.annotation(x, y, color)]
+          });
+        }
+      });
+    });
+  })();
+
+  const el = {
+    shotList: root.querySelector('#shotList'),
+    queueCount: root.querySelector('#queueCount'),
+    completedLbl: root.querySelector('#completedLbl'),
+    shotTitle: root.querySelector('#shotTitle'),
+    shotSub: root.querySelector('#shotSub'),
+    shotMeta: root.querySelector('#shotMeta'),
+    mainImage: root.querySelector('#videoCanvas'),
+    compareImage: root.querySelector('#compareCanvas'),
+    annLayer: root.querySelector('#annLayer'),
+    calloutHost: root.querySelector('#calloutHost'),
+    tcDisplay: root.querySelector('#tcDisplay'),
+    frameLbl: root.querySelector('#frameLbl'),
+    timelineInput: root.querySelector('#timelineInput'),
+    tcRuler: root.querySelector('#tcRuler'),
+    frameStrip: root.querySelector('#frameStrip'),
+    versionsRow: root.querySelector('#versionsRow'),
+    notesList: root.querySelector('#notesList'),
+    activeVersionLbl: root.querySelector('#activeVersionLbl'),
+    openCount: root.querySelector('#openCount'),
+    notesCountBadge: root.querySelector('#notesCountBadge'),
+    filterRow: root.querySelector('.filter-row'),
+    notesMeta: root.querySelector('.notes-meta'),
+    floatInput: root.querySelector('#floatInput'),
+    floatText: root.querySelector('#floatText'),
+    floatSave: root.querySelector('#floatSave'),
+    floatCancel: root.querySelector('#floatCancel')
+  };
+  function setRightTab(tab) {
+    state.rightTab = tab;
+    root.querySelectorAll('.right-tabs .rtab').forEach((t) => t.classList.toggle('active', t.dataset.rtab === tab));
+  }
+  function getNoteById(noteId) {
+    return state.notes.find((n) => String(n.id) === String(noteId)) || null;
+  }
+  function updateNoteById(noteId, updater) {
+    const idx = state.notes.findIndex((n) => String(n.id) === String(noteId));
+    if (idx < 0) return false;
+    const next = updater({ ...state.notes[idx] });
+    if (!next) return false;
+    state.notes[idx] = next;
+    return true;
+  }
+  function deleteNoteById(noteId) {
+    const before = state.notes.length;
+    state.notes = state.notes.filter((n) => String(n.id) !== String(noteId));
+    if (String(state.focusedNote) === String(noteId)) state.focusedNote = null;
+    if (String(state.hoveredNote) === String(noteId)) state.hoveredNote = null;
+    return state.notes.length !== before;
+  }
+  function syncNoteFilterButtons() {
+    root.querySelectorAll('.filter-tabs button').forEach((b) => {
+      b.classList.toggle('active', (b.dataset.filter || 'open') === state.noteFilter);
+    });
+  }
+  function selectVersion(index) {
+    state.selectedVersion = index;
+    const all = notesForVersion().sort((a, b) => a.frame - b.frame);
+    if (all.length && !all.some((n) => n.frame === state.currentFrame)) {
+      state.currentFrame = all[0].frame;
+    }
+    // Show full history by default for version review.
+    state.noteFilter = 'all';
+    syncNoteFilterButtons();
+    state.focusedNote = null;
+    state.hoveredNote = null;
+    renderAll();
+  }
+  function selectNote(note) {
+    if (!note) return;
+    const idx = activeShot().versions.findIndex((v) => v.v === note.version);
+    if (idx >= 0 && idx !== state.selectedVersion) {
+      state.selectedVersion = idx;
+      state.noteFilter = 'all';
+      syncNoteFilterButtons();
+    }
+    state.focusedNote = note.id;
+    state.currentFrame = note.frame;
+    setRightTab('notes');
+    renderAll();
+  }
+
+  function activeShot() { return state.shots[state.selectedShot]; }
+  function activeVersionMeta() { return activeShot().versions[state.selectedVersion] || activeShot().versions[0]; }
+  function activeVersion() { return activeVersionMeta()?.v || ''; }
+  function latestVersionTag() { return activeShot().versions[0]?.v || activeVersion(); }
+  function versionIndexForTag(vTag) {
+    const i = activeShot().versions.findIndex((v) => v.v === vTag);
+    return i < 0 ? 999 : i;
+  }
+  function isSupervisorRw() {
+    if (rwTreatAsSupervisor) return true;
+    return typeof User !== 'undefined' && User.current && User.current.role === 'supervisor';
+  }
+  function notesForFrame() { return state.notes.filter((n) => n.shot === activeShot().id && n.version === activeVersion() && n.frame === state.currentFrame); }
+  function notesForVersion() { return state.notes.filter((n) => n.shot === activeShot().id && n.version === activeVersion()); }
+  function notesForListFilter() {
+    const shot = activeShot();
+    const sel = state.selectedVersion;
+    const curTag = activeVersion();
+    const vIdx = (tag) => versionIndexForTag(tag);
+    const local = state.notes
+      .filter((n) => n.shot === shot.id && n.version === curTag)
+      .sort((a, b) => a.frame - b.frame);
+    if (state.noteFilter === 'open') return local.filter((n) => !n.resolved);
+    if (state.noteFilter === 'resolved') return local.filter((n) => !!n.resolved);
+    const olderResolved = state.notes.filter((n) => {
+      if (n.shot !== shot.id || !n.resolved) return false;
+      return vIdx(n.version) > sel;
+    });
+    const byId = new Map();
+    local.forEach((n) => byId.set(String(n.id), n));
+    olderResolved.forEach((n) => byId.set(String(n.id), n));
+    return Array.from(byId.values()).sort((a, b) => {
+      const ai = vIdx(a.version);
+      const bi = vIdx(b.version);
+      if (ai !== bi) return ai - bi;
+      return a.frame - b.frame;
+    });
+  }
+  function noteStatusChipsHtml(n) {
+    const cur = activeVersion();
+    const chips = [];
+    if (!n.resolved && n.revisedFromVersion) {
+      chips.push(`<span class="note-chip revised-from" title="Supervisor reopened this feedback for the current version">Reopened from ${n.revisedFromVersion}</span>`);
+    }
+    if (n.version && n.version !== cur) {
+      chips.push(`<span class="note-chip ver" title="Feedback from an older publish">${n.version}</span>`);
+    }
+    if (n.resolved) {
+      if (n.resolvedBySupervisor) {
+        chips.push('<span class="note-chip res-sup">Supervisor resolved</span>');
+      } else if (versionIndexForTag(n.version) > 0) {
+        chips.push('<span class="note-chip res-auto">Auto-resolved (superseded by newer version)</span>');
+      } else {
+        chips.push('<span class="note-chip res-openver">Resolved</span>');
+      }
+    } else if (state.noteFilter !== 'open') {
+      chips.push('<span class="note-chip open">Open</span>');
+    }
+    return chips.length ? `<div class="note-card-chips">${chips.join('')}</div>` : '';
+  }
+  function colorOf(c) {
+    return ({ y: '#f5b945', o: '#fb923c', r: '#ef5b5b', g: '#34d399', b: '#60a5fa', p: '#eaab48' })[c] || '#eaab48';
+  }
+  function colorSoftOf(c) {
+    return ({ y: 'rgba(245,185,69,.3)', o: 'rgba(251,146,60,.3)', r: 'rgba(239,91,91,.3)', g: 'rgba(52,211,153,.3)', b: 'rgba(96,165,250,.3)', p: 'rgba(234,171,72,.3)' })[c] || 'rgba(234,171,72,.3)';
+  }
+  function drawAnnotation(ctx, a, W, H, focused, draft, dim) {
+    const col = colorOf(a.color || 'p');
+    ctx.save();
+    if (dim) ctx.globalAlpha = 0.32;
+    ctx.strokeStyle = col;
+    ctx.fillStyle = col;
+    ctx.lineWidth = focused ? 3 : 2.2;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    if (focused || draft) {
+      ctx.shadowColor = col;
+      ctx.shadowBlur = 12;
+    }
+    if (a.type === 'rect') {
+      ctx.strokeRect(a.x * W, a.y * H, a.w * W, a.h * H);
+    } else if (a.type === 'circle') {
+      ctx.beginPath();
+      ctx.ellipse(a.x * W + (a.w * W) / 2, a.y * H + (a.h * H) / 2, (a.w * W) / 2, (a.h * H) / 2, 0, 0, Math.PI * 2);
+      ctx.stroke();
+    } else if (a.type === 'arrow' && a.points && a.points.length >= 2) {
+      const p1 = a.points[0];
+      const p2 = a.points[1];
+      const x1 = p1.x * W;
+      const y1 = p1.y * H;
+      const x2 = p2.x * W;
+      const y2 = p2.y * H;
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+      const ang = Math.atan2(y2 - y1, x2 - x1);
+      const head = 12;
+      ctx.beginPath();
+      ctx.moveTo(x2, y2);
+      ctx.lineTo(x2 - head * Math.cos(ang - Math.PI / 6), y2 - head * Math.sin(ang - Math.PI / 6));
+      ctx.lineTo(x2 - head * Math.cos(ang + Math.PI / 6), y2 - head * Math.sin(ang + Math.PI / 6));
+      ctx.closePath();
+      ctx.fill();
+    } else if (a.type === 'free' && a.points && a.points.length > 1) {
+      ctx.beginPath();
+      ctx.moveTo(a.points[0].x * W, a.points[0].y * H);
+      for (let i = 1; i < a.points.length; i += 1) ctx.lineTo(a.points[i].x * W, a.points[i].y * H);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function tc(frame) {
+    const f = frame % state.fps;
+    const s = Math.floor(frame / state.fps);
+    return `00:00:${String(s).padStart(2, '0')}:${String(f).padStart(2, '0')}`;
+  }
+  const timelineThumbCache = new Map();
+  let thumbRequestId = 0;
+  async function ensureVideoThumbs(shot, source = 'video', count = 16) {
+    const srcUrl = source === 'compare' ? (shot.compareVideo || shot.video || '') : (shot.video || '');
+    const key = `${shot.id}::${source}::${srcUrl}`;
+    const cached = timelineThumbCache.get(key);
+    if (cached?.frames?.length === count) return cached.frames;
+    if (cached?.loading) return null;
+    timelineThumbCache.set(key, { loading: true, frames: [] });
+    const requestId = ++thumbRequestId;
+    try {
+      const sampler = document.createElement('video');
+      sampler.muted = true;
+      sampler.preload = 'auto';
+      sampler.playsInline = true;
+      sampler.crossOrigin = 'anonymous';
+      sampler.src = srcUrl;
+      await new Promise((resolve, reject) => {
+        const onOk = () => { cleanup(); resolve(); };
+        const onErr = () => { cleanup(); reject(new Error('video metadata failed')); };
+        const cleanup = () => {
+          sampler.removeEventListener('loadedmetadata', onOk);
+          sampler.removeEventListener('error', onErr);
+        };
+        sampler.addEventListener('loadedmetadata', onOk);
+        sampler.addEventListener('error', onErr);
+      });
+      const duration = Math.max(0.2, Number(sampler.duration) || 8);
+      const canvas = document.createElement('canvas');
+      canvas.width = 180;
+      canvas.height = 60;
+      const ctxThumb = canvas.getContext('2d');
+      const frames = [];
+      for (let i = 0; i < count; i += 1) {
+        const t = (i / Math.max(1, count - 1)) * Math.max(0.1, duration - 0.1);
+        await new Promise((resolve) => {
+          const onSeek = () => { sampler.removeEventListener('seeked', onSeek); resolve(); };
+          sampler.addEventListener('seeked', onSeek);
+          try { sampler.currentTime = t; } catch (_e) { sampler.removeEventListener('seeked', onSeek); resolve(); }
+        });
+        if (ctxThumb) {
+          ctxThumb.clearRect(0, 0, canvas.width, canvas.height);
+          ctxThumb.drawImage(sampler, 0, 0, canvas.width, canvas.height);
+          try {
+            frames.push(canvas.toDataURL('image/jpeg', 0.72));
+          } catch (_e) {
+            frames.push('');
+          }
+        } else {
+          frames.push('');
+        }
+      }
+      timelineThumbCache.set(key, { loading: false, frames });
+      if (requestId === thumbRequestId && activeShot().id === shot.id) renderFrameStrip();
+      return frames;
+    } catch (_error) {
+      timelineThumbCache.set(key, { loading: false, frames: [] });
+      return null;
+    }
+  }
+
+  function renderOverlay() {
+    const items = notesForFrame().sort((a, b) => String(a.id).localeCompare(String(b.id)));
+    const activeId = state.focusedNote || state.hoveredNote;
+    const pins = items.map((n, i) => `<button class="pin" data-note-id="${n.id}" style="left:${n.x}%;top:${n.y}%;background:${colorOf(n.color)};box-shadow:0 2px 8px rgba(0,0,0,.5),0 0 0 3px ${colorSoftOf(n.color)}">${i + 1}</button>`).join('');
+    const active = items.find((n) => n.id === activeId);
+    let callout = '';
+    if (active) {
+      const idx = items.findIndex((n) => n.id === active.id) + 1;
+      callout = `<div class="callout" data-note-id="${active.id}" style="left:clamp(8px, calc(${active.x}% + 16px), calc(100% - 228px)); top:clamp(8px, calc(${active.y}% - 34px), calc(100% - 120px)); --c:${colorOf(active.color)};">
+        <div class="head"><span class="num">${idx}</span></div>
+        <div class="text">${active.text}</div>
+        <div class="meta"><span class="av">${active.initials || 'MP'}</span><b>${active.author}</b><span class="sep"></span><span>Frame ${active.frame}</span></div>
+      </div>`;
+    }
+    el.calloutHost.innerHTML = `${pins}${callout}`;
+    el.calloutHost.querySelectorAll('.pin').forEach((pin, i) => {
+      pin.addEventListener('click', (event) => {
+        event.stopPropagation();
+        selectNote(items[i]);
+      });
+      pin.addEventListener('mouseenter', () => { state.hoveredNote = items[i]?.id || null; renderOverlay(); });
+      pin.addEventListener('mouseleave', () => { if (!state.focusedNote) { state.hoveredNote = null; renderOverlay(); } });
+    });
+  }
+
+  const canvas = el.annLayer;
+  const ctx = canvas?.getContext?.('2d');
+  let drawing = false;
+  let drawStart = null;
+  let drawCur = null;
+  let freePath = [];
+  let pendingShape = null;
+  function resizeCanvas() {
+    if (!canvas) return;
+    const r = canvas.getBoundingClientRect();
+    canvas.width = Math.max(1, Math.floor(r.width));
+    canvas.height = Math.max(1, Math.floor(r.height));
+  }
+  function makeShapeFromPoints(tool, p1, p2) {
+    if (!canvas) return null;
+    const W = canvas.width || 1;
+    const H = canvas.height || 1;
+    const x1n = p1.x / W;
+    const y1n = p1.y / H;
+    const x2n = p2.x / W;
+    const y2n = p2.y / H;
+    if (tool === 'rect') return { type: 'rect', x: Math.min(x1n, x2n), y: Math.min(y1n, y2n), w: Math.abs(x2n - x1n), h: Math.abs(y2n - y1n), color: 'p' };
+    if (tool === 'circle') return { type: 'circle', x: Math.min(x1n, x2n), y: Math.min(y1n, y2n), w: Math.abs(x2n - x1n), h: Math.abs(y2n - y1n), color: 'p' };
+    if (tool === 'arrow') return { type: 'arrow', points: [{ x: x1n, y: y1n }, { x: x2n, y: y2n }], color: 'p' };
+    return null;
+  }
+  function noteContainsPoint(note, nx, ny) {
+    for (const a of (note.annotations || [])) {
+      if (a.type === 'rect' || a.type === 'circle') {
+        const cx = a.x + a.w / 2;
+        const cy = a.y + a.h / 2;
+        if (a.type === 'rect') {
+          if (nx >= a.x && nx <= a.x + a.w && ny >= a.y && ny <= a.y + a.h) return true;
+        } else {
+          const rx = Math.max(a.w / 2, 0.005);
+          const ry = Math.max(a.h / 2, 0.005);
+          const dx = (nx - cx) / rx;
+          const dy = (ny - cy) / ry;
+          if (dx * dx + dy * dy <= 1.05) return true;
+        }
+      } else if (a.type === 'arrow' && a.points && a.points.length >= 2) {
+        const p1 = a.points[0];
+        const p2 = a.points[1];
+        const A = nx - p1.x;
+        const B = ny - p1.y;
+        const C = p2.x - p1.x;
+        const D = p2.y - p1.y;
+        const dot = A * C + B * D;
+        const len = C * C + D * D;
+        const t = len ? Math.max(0, Math.min(1, dot / len)) : 0;
+        const xx = p1.x + t * C;
+        const yy = p1.y + t * D;
+        if (Math.hypot(nx - xx, ny - yy) < 0.02) return true;
+      } else if (a.type === 'free' && a.points) {
+        for (let i = 1; i < a.points.length; i += 1) {
+          const p1 = a.points[i - 1];
+          const p2 = a.points[i];
+          const A = nx - p1.x;
+          const B = ny - p1.y;
+          const C = p2.x - p1.x;
+          const D = p2.y - p1.y;
+          const dot = A * C + B * D;
+          const len = C * C + D * D;
+          const t = len ? Math.max(0, Math.min(1, dot / len)) : 0;
+          const xx = p1.x + t * C;
+          const yy = p1.y + t * D;
+          if (Math.hypot(nx - xx, ny - yy) < 0.02) return true;
+        }
+      }
+    }
+    return false;
+  }
+  function hitTestNote(nx, ny) {
+    const candidates = notesForFrame();
+    for (let i = candidates.length - 1; i >= 0; i -= 1) {
+      if (noteContainsPoint(candidates[i], nx, ny)) return candidates[i];
+    }
+    return null;
+  }
+  function renderAnnotations() {
+    if (!canvas || !ctx) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const visibleNotes = notesForFrame();
+    const hasActive = state.focusedNote != null || state.hoveredNote != null;
+    visibleNotes.forEach((n) => {
+      const isActive = state.focusedNote === n.id || state.hoveredNote === n.id;
+      const dim = (hasActive && !isActive) || !!n.resolved;
+      (n.annotations || []).forEach((a) => drawAnnotation(ctx, a, canvas.width, canvas.height, isActive, false, dim));
+    });
+    if (drawing && drawStart && drawCur) {
+      if (state.tool === 'draw' && freePath.length > 1) {
+        drawAnnotation(ctx, { type: 'free', points: freePath, color: 'p' }, canvas.width, canvas.height, true, true, false);
+      } else {
+        const a = makeShapeFromPoints(state.tool, drawStart, drawCur);
+        if (a) drawAnnotation(ctx, a, canvas.width, canvas.height, true, true, false);
+      }
+    }
+  }
+
+  function renderTimelineMarkers() {
+    const items = notesForVersion();
+    const labels = [1, 48, 96, 144, 192, 240]
+      .map((f) => `<span class="lbl ${f === 1 ? 'start' : ''} ${f === 240 ? 'end' : ''}" style="left:${((f - 1) / (state.duration - 1)) * 100}%">${f}</span>`)
+      .join('');
+    const markers = items
+      .map((n) => `<button class="marker${n.resolved ? ' resolved' : ''}" data-note-id="${n.id}" style="left:${(n.frame / state.duration) * 100}%;" title="Frame ${n.frame}${n.resolved ? ' · resolved' : ''}"></button>`)
+      .join('');
+    el.tcRuler.innerHTML = `${labels}${markers}`;
+    el.tcRuler.querySelectorAll('.marker[data-note-id]').forEach((m) => {
+      m.addEventListener('click', () => {
+        const id = m.getAttribute('data-note-id');
+        selectNote(notesForVersion().find((n) => String(n.id) === String(id)));
+      });
+    });
+  }
+
+  function renderFrameStrip() {
+    const totalCells = 16;
+    const playheadLeft = (state.currentFrame / state.duration) * 100;
+    const keyMain = `${activeShot().id}::video::${activeShot().video || ''}`;
+    const keyCompare = `${activeShot().id}::compare::${activeShot().compareVideo || activeShot().video || ''}`;
+    const thumbs = timelineThumbCache.get(keyMain)?.frames || [];
+    const compareThumbs = timelineThumbCache.get(keyCompare)?.frames || [];
+    const cells = Array.from({ length: totalCells }).map((_, i) => {
+      const frameAt = Math.max(1, Math.round((i / (totalCells - 1)) * state.duration));
+      const src = thumbs[i];
+      const cmp = compareThumbs[i];
+      if (state.compare && src && cmp) {
+        return `<div class="fcell compare" data-frame="${frameAt}">
+          <div class="fcompare-top"><span class="fmini-tag">B</span><img class="fthumbimg" src="${src}" alt="base frame ${i + 1}" /></div>
+          <div class="fcompare-bottom"><span class="fmini-tag">C</span><img class="fthumbimg" src="${cmp}" alt="compare frame ${i + 1}" /></div>
+        </div>`;
+      }
+      if (src) {
+        return `<div class="fcell" data-frame="${frameAt}"><img class="fthumbimg" src="${src}" alt="frame thumbnail ${i + 1}" /></div>`;
+      }
+      return `<div class="fcell" data-frame="${frameAt}"><canvas class="fthumb" data-idx="${i}"></canvas></div>`;
+    }).join('');
+    el.frameStrip.innerHTML = `${cells}<div class="ph" style="left:${playheadLeft}%"></div><div class="ph-pill" style="left:${playheadLeft}%">${state.currentFrame}</div>`;
+    el.frameStrip.querySelectorAll('.fcell[data-frame]').forEach((cell) => {
+      cell.addEventListener('click', () => {
+        state.currentFrame = Number(cell.dataset.frame || state.currentFrame);
+        renderAll();
+      });
+    });
+
+    // Fallback generated thumbnails if real video thumbs not ready
+    el.frameStrip.querySelectorAll('canvas.fthumb').forEach((cv) => {
+      const i = Number(cv.dataset.idx || 0);
+      const w = Math.max(24, cv.clientWidth || 40);
+      const h = Math.max(24, cv.clientHeight || 60);
+      cv.width = w;
+      cv.height = h;
+      const g = cv.getContext('2d');
+      if (!g) return;
+      const hue = (220 + i * 6) % 360;
+      const grad = g.createLinearGradient(0, 0, w, h);
+      grad.addColorStop(0, `hsla(${hue},55%,22%,1)`);
+      grad.addColorStop(1, `hsla(${(hue + 35) % 360},60%,10%,1)`);
+      g.fillStyle = grad;
+      g.fillRect(0, 0, w, h);
+      g.fillStyle = 'rgba(140,105,255,0.16)';
+      g.beginPath();
+      g.ellipse(w * 0.62, h * 0.45, w * 0.28, h * 0.34, 0, 0, Math.PI * 2);
+      g.fill();
+      g.fillStyle = 'rgba(255,255,255,0.1)';
+      for (let s = 0; s < 10; s += 1) g.fillRect((s * 37 + i * 11) % w, (s * 19 + i * 7) % h, 1.2, 1.2);
+    });
+  }
+
+  function renderRight() {
+    if (state.rightTab === 'notes') {
+      const sup = isSupervisorRw();
+      const ns = notesForListFilter();
+      el.notesList.innerHTML = ns.map((n, i) => {
+        const resolveBtn = sup && !n.resolved
+          ? `<button class="note-act note-resolve-btn" data-note-id="${n.id}" type="button">Resolve</button>`
+          : '';
+        const reviseBtn = sup && n.resolved
+          ? `<button class="note-act note-revise-btn" data-note-id="${n.id}" type="button">Revise</button>`
+          : '';
+        return `<article class="note-card ${n.frame === state.currentFrame ? 'focused' : ''}" data-note-id="${n.id}" data-note-frame="${n.frame}">
+        <div class="row"><span class="num">${i + 1}</span><span class="frame-lbl">Frame ${n.frame}</span><span class="grow"></span><span class="ago">Just now</span></div>
+        ${noteStatusChipsHtml(n)}
+        <div class="text">${n.text}</div>
+        <div class="foot">
+          <span class="author">${n.author}</span>
+          <span class="grow"></span>
+          ${resolveBtn}${reviseBtn}
+          <button class="note-act note-reply-btn" data-note-id="${n.id}" type="button">Reply</button>
+          <button class="note-act note-edit-btn" data-note-id="${n.id}" type="button">Edit</button>
+          <button class="note-act note-del-btn" data-note-id="${n.id}" type="button">Delete</button>
+        </div>
+        <div class="note-del-confirm" data-del-confirm="${n.id}" style="display:none;">
+          <span class="note-del-msg">Delete this note and its on-frame annotation?</span>
+          <button class="note-act note-del-cancel" data-del-cancel="${n.id}" type="button">Cancel</button>
+          <button class="note-act note-del-confirm-btn" data-del-confirm-btn="${n.id}" type="button">Delete</button>
+        </div>
+        <div class="note-compose reply-compose" data-compose-for="${n.id}" style="display:none;">
+          <input class="note-input" data-reply-input="${n.id}" placeholder="Write a reply..." />
+          <button class="note-send-reply" data-send-reply="${n.id}" type="button">Reply</button>
+        </div>
+        <div class="note-compose edit-compose" data-edit-for="${n.id}" style="display:none;">
+          <textarea class="note-input edit" data-edit-input="${n.id}">${n.text}</textarea>
+          <button class="note-save-edit" data-save-edit="${n.id}" type="button">Save</button>
+          <button class="note-cancel-edit" data-cancel-edit="${n.id}" type="button">Cancel</button>
+        </div>
+        ${Array.isArray(n.repliesData) && n.repliesData.length ? `<div class="reply-thread">${n.repliesData.map((r) => `<div class="reply"><div class="reply-head"><span class="av">${r.initials || ''}</span><b>${r.author}</b><span class="grow"></span><span>${r.when || ''}</span></div><div class="reply-text">${r.text}</div></div>`).join('')}</div>` : ''}
+      </article>`;
+      }).join('') || '<p class="review-note-empty">No notes.</p>';
+      el.notesList.querySelectorAll('.note-card[data-note-id]').forEach((node) => {
+        node.addEventListener('click', (event) => {
+          if (event.target.closest('.note-act') || event.target.closest('.note-compose') || event.target.closest('.note-del-confirm') || event.target.closest('input') || event.target.closest('textarea')) return;
+          const id = node.getAttribute('data-note-id');
+          const note = ns.find((x) => String(x.id) === String(id));
+          if (note) selectNote(note);
+        });
+        node.addEventListener('mouseenter', () => {
+          const id = node.getAttribute('data-note-id');
+          const note = ns.find((x) => String(x.id) === String(id));
+          state.hoveredNote = note?.id || null;
+          renderOverlay();
+        });
+        node.addEventListener('mouseleave', () => {
+          state.hoveredNote = null;
+          renderOverlay();
+        });
+      });
+      el.notesList.querySelectorAll('.note-resolve-btn').forEach((btn) => {
+        btn.addEventListener('click', (event) => {
+          event.stopPropagation();
+          if (!isSupervisorRw()) return;
+          const noteId = btn.getAttribute('data-note-id');
+          updateNoteById(noteId, (note) => ({ ...note, resolved: true, resolvedBySupervisor: true, revisedFromVersion: undefined }));
+          renderAll();
+        });
+      });
+      el.notesList.querySelectorAll('.note-revise-btn').forEach((btn) => {
+        btn.addEventListener('click', (event) => {
+          event.stopPropagation();
+          if (!isSupervisorRw()) return;
+          const noteId = btn.getAttribute('data-note-id');
+          const latest = latestVersionTag();
+          updateNoteById(noteId, (note) => ({
+            ...note,
+            resolved: false,
+            resolvedBySupervisor: false,
+            version: latest,
+            revisedFromVersion: note.version
+          }));
+          state.selectedVersion = 0;
+          state.noteFilter = 'open';
+          syncNoteFilterButtons();
+          const nn = getNoteById(noteId);
+          if (nn) {
+            state.focusedNote = nn.id;
+            state.currentFrame = nn.frame;
+          }
+          renderAll();
+        });
+      });
+      el.notesList.querySelectorAll('.note-reply-btn').forEach((btn) => {
+        btn.addEventListener('click', (event) => {
+          event.stopPropagation();
+          const noteId = btn.getAttribute('data-note-id');
+          const compose = el.notesList.querySelector(`[data-compose-for="${noteId}"]`);
+          if (compose) compose.style.display = compose.style.display === 'none' ? 'flex' : 'none';
+        });
+      });
+      el.notesList.querySelectorAll('.note-edit-btn').forEach((btn) => {
+        btn.addEventListener('click', (event) => {
+          event.stopPropagation();
+          const noteId = btn.getAttribute('data-note-id');
+          const compose = el.notesList.querySelector(`[data-edit-for="${noteId}"]`);
+          if (compose) compose.style.display = compose.style.display === 'none' ? 'flex' : 'none';
+        });
+      });
+      el.notesList.querySelectorAll('.note-del-btn').forEach((btn) => {
+        btn.addEventListener('click', (event) => {
+          event.stopPropagation();
+          const noteId = btn.getAttribute('data-note-id');
+          const confirm = el.notesList.querySelector(`[data-del-confirm="${noteId}"]`);
+          if (confirm) confirm.style.display = confirm.style.display === 'none' ? 'flex' : 'none';
+        });
+      });
+      el.notesList.querySelectorAll('.note-del-cancel').forEach((btn) => {
+        btn.addEventListener('click', (event) => {
+          event.stopPropagation();
+          const noteId = btn.getAttribute('data-del-cancel');
+          const confirm = el.notesList.querySelector(`[data-del-confirm="${noteId}"]`);
+          if (confirm) confirm.style.display = 'none';
+        });
+      });
+      el.notesList.querySelectorAll('.note-del-confirm-btn').forEach((btn) => {
+        btn.addEventListener('click', (event) => {
+          event.stopPropagation();
+          const noteId = btn.getAttribute('data-del-confirm-btn');
+          deleteNoteById(noteId);
+          renderAll();
+        });
+      });
+      el.notesList.querySelectorAll('.note-send-reply').forEach((btn) => {
+        btn.addEventListener('click', (event) => {
+          event.stopPropagation();
+          const noteId = btn.getAttribute('data-send-reply');
+          const input = el.notesList.querySelector(`[data-reply-input="${noteId}"]`);
+          const value = String(input?.value || '').trim();
+          if (!value) return;
+          updateNoteById(noteId, (note) => ({
+            ...note,
+            repliesData: [...(Array.isArray(note.repliesData) ? note.repliesData : []), { author: 'Supervisor', initials: 'SV', color: 'p', text: value, when: 'now' }]
+          }));
+          renderAll();
+        });
+      });
+      el.notesList.querySelectorAll('.note-save-edit').forEach((btn) => {
+        btn.addEventListener('click', (event) => {
+          event.stopPropagation();
+          const noteId = btn.getAttribute('data-save-edit');
+          const input = el.notesList.querySelector(`[data-edit-input="${noteId}"]`);
+          const value = String(input?.value || '').trim();
+          if (!value) return;
+          updateNoteById(noteId, (note) => ({ ...note, text: value }));
+          renderAll();
+        });
+      });
+      el.notesList.querySelectorAll('.note-cancel-edit').forEach((btn) => {
+        btn.addEventListener('click', (event) => {
+          event.stopPropagation();
+          const noteId = btn.getAttribute('data-cancel-edit');
+          const compose = el.notesList.querySelector(`[data-edit-for="${noteId}"]`);
+          if (compose) compose.style.display = 'none';
+        });
+      });
+    } else if (state.rightTab === 'versions') {
+      el.notesList.innerHTML = activeShot().versions.map((v, i) => {
+        const count = state.notes.filter((n) => n.shot === activeShot().id && n.version === v.v).length;
+        const prev = activeShot().versions[i + 1];
+        const prevNotes = prev ? state.notes.filter((n) => n.shot === activeShot().id && n.version === prev.v) : [];
+        const nowNotes = state.notes.filter((n) => n.shot === activeShot().id && n.version === v.v);
+        const deltaResolved = Math.max(0, prevNotes.filter((n) => !n.resolved).length - nowNotes.filter((n) => !n.resolved).length);
+        return `<button class="versions-panel-item ${i === state.selectedVersion ? 'active' : ''}" data-version-index="${i}">
+          <div class="top"><b>${v.v}</b><span>${count} notes</span></div>
+          <div class="bottom">${v.when || `${i + 1} day ago`} ${v.status === 'current' ? '· Current' : v.status === 'approved' ? '· Final' : ''}</div>
+          <div class="summary">${i === activeShot().versions.length - 1 ? 'Baseline version.' : `${deltaResolved} issue${deltaResolved === 1 ? '' : 's'} resolved since ${prev?.v || 'prev'}.`}</div>
+        </button>`;
+      }).join('');
+      el.notesList.querySelectorAll('[data-version-index]').forEach((btn) => btn.addEventListener('click', () => {
+        selectVersion(Number(btn.dataset.versionIndex));
+      }));
+    } else {
+      const s = activeShot();
+      el.notesList.innerHTML = `<div class="info-card"><div><b>Shot</b> ${s.id}</div><div><b>Task</b> ${s.task}</div><div><b>Artist</b> ${s.artist}</div><div><b>Version</b> ${activeVersion()}</div></div>`;
+    }
+  }
+
+  function renderAll() {
+    const s = activeShot();
+    const prevShot = state.selectedShot > 0 ? state.shots[state.selectedShot - 1] : null;
+    const nextShot = state.selectedShot < state.shots.length - 1 ? state.shots[state.selectedShot + 1] : null;
+    el.queueCount.textContent = String(state.shots.length);
+    el.completedLbl.textContent = `0 of ${state.shots.length} completed`;
+    el.shotTitle.textContent = s.id;
+    el.shotSub.textContent = s.task;
+    const latestVersion = s.versions[0];
+    el.shotMeta.textContent = `Episode 01 · Sequence 02 · ${s.id} · Task: Final Comp · Artist: ${s.artist} · Latest: ${latestVersion?.v || activeVersion()} (${latestVersion?.when || 'recent'})`;
+    el.activeVersionLbl.textContent = activeVersion();
+    const mainSrc = s.video || '';
+    const compareSrc = s.compareVideo || s.video || '';
+    if (mainSrc && el.mainImage.src !== mainSrc) {
+      el.mainImage.src = mainSrc;
+      el.mainImage.loop = true;
+      el.mainImage.currentTime = 0;
+      if (state.playing) el.mainImage.play().catch(() => {});
+    }
+    if (compareSrc && el.compareImage.src !== compareSrc) {
+      el.compareImage.src = compareSrc;
+      el.compareImage.loop = true;
+      el.compareImage.currentTime = 0;
+      if (state.playing && state.compare) el.compareImage.play().catch(() => {});
+    }
+    el.compareImage.style.display = state.compare ? 'block' : 'none';
+    el.compareImage.style.opacity = '0.45';
+    ensureVideoThumbs(s, 'video');
+    if (state.compare) ensureVideoThumbs(s, 'compare');
+    if (nextShot) {
+      ensureVideoThumbs(nextShot, 'video');
+      if (state.compare) ensureVideoThumbs(nextShot, 'compare');
+    }
+    root.querySelector('#prevShotLbl').textContent = prevShot ? prevShot.id : '--';
+    root.querySelector('#nextShotLbl').textContent = nextShot ? nextShot.id : '--';
+    const sectionOrder = ['CURRENT', 'UP NEXT', 'OTHER ASSIGNED'];
+    el.shotList.innerHTML = sectionOrder.map((section) => {
+      const rows = state.shots
+        .map((shot, i) => ({ shot, i }))
+        .filter((x) => x.shot.section === section)
+        .filter((x) => state.shotFilter === 'all' ? true : state.shotFilter === 'mine' ? x.i === state.selectedShot : x.shot.section !== 'OTHER ASSIGNED');
+      if (!rows.length) return '';
+      const cards = rows.map(({ shot, i }) => {
+      const status = shot.status || (i === state.selectedShot ? 'review' : 'progress');
+      const statusText = status === 'review' ? 'In Review' : 'In Progress';
+      return `<button class="shot-card ${i === state.selectedShot ? 'active' : ''}" data-shot-index="${i}">
+        <div class="shot-thumb"><div class="thumb-fill" style="background-image:linear-gradient(180deg, rgba(10,10,13,0.15), rgba(10,10,13,0.55)), url('${shot.image}')"></div></div>
+        <div class="shot-info">
+          <div class="shot-name">${shot.id}</div>
+          <div class="shot-task">${shot.task}</div>
+          <div class="shot-meta">${shot.versions[0]?.v || ''} · ${shot.when || `${i + 2}h ago`}</div>
+          <div class="shot-status"><span class="dot ${status}"></span><span class="lbl">${statusText}</span></div>
+        </div>
+        <span class="menu-dot">•••</span>
+      </button>`;
+      }).join('');
+      return `<div class="shot-section">${section}</div>${cards}`;
+    }).join('');
+    el.shotList.querySelectorAll('[data-shot-index]').forEach((btn) => btn.addEventListener('click', () => {
+      state.selectedShot = Number(btn.dataset.shotIndex);
+      state.selectedVersion = 0;
+      state.noteFilter = 'open';
+      syncNoteFilterButtons();
+      renderAll();
+    }));
+    el.versionsRow.innerHTML = s.versions.map((v, i) => {
+      const tag = v.status === 'current'
+        ? '<span class="v-tag current">Current</span>'
+        : (v.status === 'approved' ? '<span class="v-tag approved">Approved</span>' : '');
+      return `<button class="v-card ${i === state.selectedVersion ? 'active' : ''}" data-version-index="${i}">
+        <div class="v-thumb"><div class="v-fill" style="background-image:linear-gradient(180deg, rgba(10,10,13,0.12), rgba(10,10,13,0.55)), url('${s.image}')"></div></div>
+        <div class="v-info"><span class="v-name">${v.v}</span>${tag}</div>
+        <div class="v-when">${v.when || `${i + 1} day ago`}</div>
+      </button>`;
+    }).join('') + `
+      <button class="v-card upload" type="button">
+        <span style="font-size:18px;line-height:1;">+</span>
+        <span>Upload</span>
+        <span class="lbl">New Version</span>
+      </button>
+    `;
+    el.versionsRow.querySelectorAll('[data-version-index]').forEach((btn) => btn.addEventListener('click', () => {
+      selectVersion(Number(btn.dataset.versionIndex));
+    }));
+    el.timelineInput.value = String(state.currentFrame);
+    el.frameLbl.textContent = `${state.currentFrame}/${state.duration}`;
+    el.tcDisplay.textContent = tc(state.currentFrame);
+    const openCount = notesForVersion().filter((n) => !n.resolved).length;
+    el.openCount.textContent = `${openCount} Open`;
+    if (el.notesCountBadge) el.notesCountBadge.textContent = String(notesForVersion().length);
+    if (el.filterRow) el.filterRow.style.display = state.rightTab === 'notes' ? '' : 'none';
+    if (el.notesMeta) el.notesMeta.style.display = state.rightTab === 'notes' ? '' : 'none';
+    const vCurrentLbl = root.querySelector('#vCurrentLbl');
+    if (vCurrentLbl) vCurrentLbl.textContent = activeVersion();
+    const nextShotLbl2 = root.querySelector('#nextShotLbl2');
+    if (nextShotLbl2) nextShotLbl2.textContent = nextShot ? nextShot.id : '--';
+    renderTimelineMarkers();
+    renderFrameStrip();
+    renderAnnotations();
+    renderOverlay();
+    renderRight();
+  }
+
+  root.querySelectorAll('.left-tabs .tab').forEach((btn) => btn.addEventListener('click', () => {
+    root.querySelectorAll('.left-tabs .tab').forEach((t) => t.classList.remove('active'));
+    btn.classList.add('active');
+    state.shotFilter = btn.dataset.tab || 'all';
+    renderAll();
+  }));
+  root.querySelectorAll('.right-tabs .rtab').forEach((btn) => btn.addEventListener('click', () => {
+    setRightTab(btn.dataset.rtab || 'notes');
+    renderRight();
+  }));
+  root.querySelectorAll('.ann-toolbar .ann-tool').forEach((btn) => btn.addEventListener('click', () => {
+    root.querySelectorAll('.ann-toolbar .ann-tool').forEach((b) => b.classList.remove('active'));
+    btn.classList.add('active');
+    state.tool = btn.dataset.tool || 'pointer';
+    if (canvas) canvas.className = `annotation-layer tool-${state.tool}`;
+    root.querySelector('#viewerStage')?.classList.toggle('tool-active', state.tool !== 'pointer');
+  }));
+  root.querySelectorAll('.filter-tabs button').forEach((btn) => btn.addEventListener('click', () => {
+    root.querySelectorAll('.filter-tabs button').forEach((b) => b.classList.remove('active'));
+    btn.classList.add('active');
+    state.noteFilter = btn.dataset.filter || 'open';
+    renderRight();
+  }));
+
+  root.querySelector('#timelineInput')?.addEventListener('input', (e) => { state.currentFrame = Number(e.target.value || 1); renderAll(); });
+  let stripScrubbing = false;
+  const scrubToClientX = (clientX) => {
+    const rect = el.frameStrip.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / Math.max(1, rect.width)));
+    state.currentFrame = Math.max(1, Math.min(state.duration, Math.round(ratio * state.duration)));
+    renderAll();
+  };
+  el.frameStrip?.addEventListener('pointerdown', (e) => {
+    stripScrubbing = true;
+    el.frameStrip.setPointerCapture?.(e.pointerId);
+    scrubToClientX(e.clientX);
+  });
+  el.frameStrip?.addEventListener('pointermove', (e) => {
+    if (!stripScrubbing) return;
+    scrubToClientX(e.clientX);
+  });
+  el.frameStrip?.addEventListener('pointerup', () => { stripScrubbing = false; });
+  el.frameStrip?.addEventListener('pointercancel', () => { stripScrubbing = false; });
+  root.querySelector('#btnPrev')?.addEventListener('click', () => { state.currentFrame = Math.max(1, state.currentFrame - 1); renderAll(); });
+  root.querySelector('#btnNext')?.addEventListener('click', () => { state.currentFrame = Math.min(state.duration, state.currentFrame + 1); renderAll(); });
+  root.querySelector('#btnFirst')?.addEventListener('click', () => { state.currentFrame = 1; renderAll(); });
+  root.querySelector('#btnLast')?.addEventListener('click', () => { state.currentFrame = state.duration; renderAll(); });
+  root.querySelector('#prevShot')?.addEventListener('click', () => {
+    if (state.selectedShot <= 0) return;
+    state.selectedShot -= 1;
+    state.selectedVersion = 0;
+    renderAll();
+  });
+  root.querySelector('#nextShot')?.addEventListener('click', () => {
+    if (state.selectedShot >= state.shots.length - 1) return;
+    state.selectedShot += 1;
+    state.selectedVersion = 0;
+    renderAll();
+  });
+  root.querySelector('#compareToggle')?.addEventListener('click', () => { state.compare = !state.compare; renderAll(); });
+  root.querySelector('#btnPlay')?.addEventListener('click', () => {
+    state.playing = !state.playing;
+    const btn = root.querySelector('#btnPlay');
+    btn.innerHTML = state.playing
+      ? '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5h3v14H8zM13 5h3v14h-3z"/></svg>'
+      : '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4v16l13-8z"/></svg>';
+    if (state.playing) {
+      el.mainImage?.play?.().catch(() => {});
+      if (state.compare) el.compareImage?.play?.().catch(() => {});
+      clearInterval(state.timer);
+      state.timer = setInterval(() => {
+        state.currentFrame = state.currentFrame >= state.duration ? 1 : state.currentFrame + 1;
+        renderAll();
+      }, 1000 / state.fps);
+    } else {
+      el.mainImage?.pause?.();
+      el.compareImage?.pause?.();
+      clearInterval(state.timer);
+    }
+  });
+
+  let pendingNotePos = null;
+  function closeFloatInput() {
+    if (!el.floatInput) return;
+    el.floatInput.style.display = 'none';
+    if (el.floatText) el.floatText.value = '';
+    pendingNotePos = null;
+  }
+  root.querySelector('#viewerStage')?.addEventListener('click', (event) => {
+    if (event.target.closest('.pin') || event.target.closest('.ann-toolbar') || event.target.closest('.float-input')) return;
+    if (state.tool !== 'text') {
+      state.focusedNote = null;
+      renderOverlay();
+      return;
+    }
+    const stage = event.currentTarget;
+    const rect = stage.getBoundingClientRect();
+    const x = Math.max(2, Math.min(98, ((event.clientX - rect.left) / rect.width) * 100));
+    const y = Math.max(2, Math.min(98, ((event.clientY - rect.top) / rect.height) * 100));
+    pendingNotePos = { x, y };
+    if (!el.floatInput) return;
+    el.floatInput.style.left = `${event.clientX - rect.left + 10}px`;
+    el.floatInput.style.top = `${event.clientY - rect.top + 10}px`;
+    el.floatInput.style.display = 'block';
+    el.floatText?.focus();
+  });
+  el.floatCancel?.addEventListener('click', closeFloatInput);
+  el.floatText?.addEventListener('keydown', (event) => {
+    // Keep typing behavior natural inside note input.
+    // Prevent global workspace/player shortcuts from hijacking Space/Arrows.
+    event.stopPropagation();
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeFloatInput();
+      return;
+    }
+    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      el.floatSave?.click();
+    }
+  });
+  root.addEventListener('keydown', (event) => {
+    // Extra guard: when note composer is open, block global playback hotkeys.
+    if (el.floatInput?.style.display === 'block') {
+      const key = event.key;
+      if (key === ' ' || key === 'Spacebar' || key === 'ArrowLeft' || key === 'ArrowRight' || key === 'j' || key === 'J' || key === 'k' || key === 'K' || key === 'l' || key === 'L') {
+        event.stopPropagation();
+      }
+    }
+  }, true);
+  el.floatSave?.addEventListener('click', () => {
+    const text = (el.floatText?.value || '').trim();
+    if (!text) {
+      closeFloatInput();
+      return;
+    }
+    let ax = pendingNotePos?.x ?? 50;
+    let ay = pendingNotePos?.y ?? 50;
+    let annotations = [];
+    if (pendingShape) {
+      annotations = [pendingShape];
+      if (pendingShape.type === 'rect' || pendingShape.type === 'circle') {
+        ax = (pendingShape.x + pendingShape.w / 2) * 100;
+        ay = (pendingShape.y + pendingShape.h / 2) * 100;
+      } else if (pendingShape.points && pendingShape.points.length) {
+        const mid = pendingShape.points[Math.floor(pendingShape.points.length / 2)];
+        ax = mid.x * 100;
+        ay = mid.y * 100;
+      }
+    }
+    state.notes.push({
+      id: `n-${Date.now()}`,
+      shot: activeShot().id,
+      version: activeVersion(),
+      frame: state.currentFrame,
+      x: ax,
+      y: ay,
+      text,
+      author: 'Supervisor',
+      initials: 'SV',
+      color: 'p',
+      resolved: false,
+      resolvedBySupervisor: false,
+      annotations
+    });
+    state.focusedNote = state.notes[state.notes.length - 1].id;
+    pendingShape = null;
+    if (state.tool !== 'text') {
+      state.tool = 'pointer';
+      root.querySelectorAll('.ann-toolbar .ann-tool').forEach((b) => b.classList.toggle('active', b.dataset.tool === 'pointer'));
+      canvas.className = 'annotation-layer tool-pointer';
+      root.querySelector('#viewerStage')?.classList.remove('tool-active');
+    }
+    setRightTab('notes');
+    closeFloatInput();
+    renderAll();
+  });
+
+  resizeCanvas();
+  window.addEventListener('resize', resizeCanvas);
+  canvas?.addEventListener('pointermove', (e) => {
+    if (drawing || state.tool !== 'pointer') return;
+    const r = canvas.getBoundingClientRect();
+    const nx = (e.clientX - r.left) / r.width;
+    const ny = (e.clientY - r.top) / r.height;
+    const hit = hitTestNote(nx, ny);
+    canvas.classList.toggle('has-target', !!hit);
+    const nextHover = hit?.id || null;
+    if (nextHover !== state.hoveredNote) {
+      state.hoveredNote = nextHover;
+      renderOverlay();
+      renderAnnotations();
+    }
+  });
+  canvas?.addEventListener('pointerleave', () => {
+    canvas.classList.remove('has-target');
+    if (state.hoveredNote != null) {
+      state.hoveredNote = null;
+      renderOverlay();
+      renderAnnotations();
+    }
+  });
+  canvas?.addEventListener('pointerdown', (e) => {
+    const r = canvas.getBoundingClientRect();
+    const nx = (e.clientX - r.left) / r.width;
+    const ny = (e.clientY - r.top) / r.height;
+    if (state.tool === 'pointer') {
+      const hit = hitTestNote(nx, ny);
+      state.focusedNote = hit?.id || null;
+      renderAll();
+      return;
+    }
+    if (state.tool === 'text') return;
+    drawing = true;
+    drawStart = { x: (e.clientX - r.left), y: (e.clientY - r.top) };
+    drawCur = drawStart;
+    freePath = [{ x: nx, y: ny }];
+  });
+  canvas?.addEventListener('pointermove', (e) => {
+    if (!drawing) return;
+    const r = canvas.getBoundingClientRect();
+    drawCur = { x: (e.clientX - r.left), y: (e.clientY - r.top) };
+    if (state.tool === 'draw') freePath.push({ x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height });
+    renderAnnotations();
+  });
+  canvas?.addEventListener('pointerup', (e) => {
+    if (!drawing) return;
+    drawing = false;
+    const r = canvas.getBoundingClientRect();
+    const end = { x: (e.clientX - r.left), y: (e.clientY - r.top) };
+    let shape = null;
+    if (state.tool === 'draw') {
+      if (freePath.length > 2) shape = { type: 'free', points: freePath, color: 'p' };
+    } else {
+      shape = makeShapeFromPoints(state.tool, drawStart, end);
+    }
+    if (shape) {
+      pendingShape = shape;
+      if (!el.floatInput) return;
+      el.floatInput.style.left = `${Math.min(Math.max(8, end.x + 12), r.width - 260)}px`;
+      el.floatInput.style.top = `${Math.min(Math.max(60, end.y + 12), r.height - 140)}px`;
+      el.floatInput.style.display = 'block';
+      el.floatText?.focus();
+    }
+    renderAnnotations();
+  });
+
+  renderAll();
+}
+window.initReviewWorkspace = initReviewWorkspace;
+
+// Auto-mount in integration scenarios where app provides #main-content.
+document.addEventListener('DOMContentLoaded', () => {
+  const mainContent = document.querySelector('#main-content');
+  const supervisorApp = document.getElementById('supervisor-app');
+  if (mainContent && !supervisorApp) {
+    initReviewWorkspace(mainContent, { treatAsSupervisor: true });
+  }
+});
